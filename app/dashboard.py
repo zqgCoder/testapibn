@@ -663,6 +663,429 @@ def build_alerts(
     return {"告警": alerts, "summary": summary, "数量": len(alerts)}
 
 
+def _secret_meta(value: str) -> dict[str, bool | int]:
+    stripped = (value or "").strip()
+    return {"configured": bool(stripped), "length": len(stripped)}
+
+
+def _binance_env_label(base_url: str) -> str:
+    url = base_url.lower()
+    if "demo-fapi" in url or "testnet" in url:
+        return "demo"
+    if "fapi.binance.com" in url and "demo" not in url and "testnet" not in url:
+        return "live"
+    return "unknown"
+
+
+def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+    symbols = sorted(settings.allowed_symbol_set)
+    binance_env = _binance_env_label(settings.binance_base_url)
+    webhook_meta = _secret_meta(settings.webhook_secret)
+    dashboard_token_meta = _secret_meta(settings.dashboard_token)
+    runtime_token_meta = _secret_meta(settings.runtime_control_token)
+    binance_key_meta = _secret_meta(settings.binance_api_key)
+    binance_secret_meta = _secret_meta(settings.binance_api_secret)
+
+    if binance_env == "demo":
+        checks.append(
+            {
+                "name": "binance_environment",
+                "level": "OK",
+                "message": f"当前使用 Binance 模拟/测试环境 ({settings.binance_base_url})",
+            }
+        )
+    elif binance_env == "live":
+        if settings.enable_trading:
+            checks.append(
+                {
+                    "name": "binance_environment",
+                    "level": "ERROR",
+                    "message": "当前为 Binance 实盘 endpoint 且 ENABLE_TRADING=true，请确认环境配置",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "binance_environment",
+                    "level": "WARN",
+                    "message": "当前为 Binance 实盘 endpoint，但 ENABLE_TRADING=false",
+                }
+            )
+    else:
+        checks.append(
+            {
+                "name": "binance_environment",
+                "level": "WARN",
+                "message": f"无法识别 Binance 环境类型: {settings.binance_base_url}",
+            }
+        )
+
+    if settings.enable_trading:
+        checks.append(
+            {
+                "name": "enable_trading",
+                "level": "WARN",
+                "message": "真实交易开关已启用，请确认当前环境为 demo/testnet 且风控已配置",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "enable_trading",
+                "level": "OK",
+                "message": "交易执行已关闭，仅计划/监控，不会真实下单",
+            }
+        )
+
+    if not webhook_meta["configured"]:
+        checks.append(
+            {
+                "name": "webhook_secret",
+                "level": "ERROR",
+                "message": "WEBHOOK_SECRET 未配置",
+            }
+        )
+    elif int(webhook_meta["length"]) < 20:
+        checks.append(
+            {
+                "name": "webhook_secret",
+                "level": "WARN",
+                "message": f"WEBHOOK_SECRET 已配置但长度过短 (length={webhook_meta['length']}, 建议>=20)",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "webhook_secret",
+                "level": "OK",
+                "message": f"WEBHOOK_SECRET 已配置，长度正常 (length={webhook_meta['length']})",
+            }
+        )
+
+    if not settings.dashboard_enabled:
+        checks.append(
+            {
+                "name": "dashboard_token",
+                "level": "WARN",
+                "message": "DASHBOARD_ENABLED=false，Dashboard 未启用",
+            }
+        )
+    elif not settings.dashboard_require_token:
+        checks.append(
+            {
+                "name": "dashboard_token",
+                "level": "ERROR",
+                "message": "DASHBOARD_REQUIRE_TOKEN=false，Dashboard 未强制 Token 保护",
+            }
+        )
+    elif not dashboard_token_meta["configured"]:
+        checks.append(
+            {
+                "name": "dashboard_token",
+                "level": "ERROR",
+                "message": "DASHBOARD_TOKEN 未配置",
+            }
+        )
+    else:
+        level = "OK" if int(dashboard_token_meta["length"]) >= 16 else "WARN"
+        msg = (
+            f"DASHBOARD_TOKEN 已配置 (length={dashboard_token_meta['length']})"
+            if level == "OK"
+            else f"DASHBOARD_TOKEN 长度过短 (length={dashboard_token_meta['length']}, 建议>=16)"
+        )
+        checks.append({"name": "dashboard_token", "level": level, "message": msg})
+
+    if settings.runtime_control_enabled:
+        checks.append(
+            {
+                "name": "runtime_control",
+                "level": "OK",
+                "message": "RUNTIME_CONTROL_ENABLED=true",
+            }
+        )
+        if not settings.runtime_control_require_token:
+            checks.append(
+                {
+                    "name": "runtime_control_token",
+                    "level": "ERROR",
+                    "message": "RUNTIME_CONTROL_REQUIRE_TOKEN=false，运行控制写操作未强制 Token",
+                }
+            )
+        elif not runtime_token_meta["configured"]:
+            checks.append(
+                {
+                    "name": "runtime_control_token",
+                    "level": "ERROR",
+                    "message": "RUNTIME_CONTROL_TOKEN 未配置",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "runtime_control_token",
+                    "level": "OK",
+                    "message": f"RUNTIME_CONTROL_TOKEN 已配置 (length={runtime_token_meta['length']})",
+                }
+            )
+    else:
+        checks.append(
+            {
+                "name": "runtime_control",
+                "level": "WARN",
+                "message": "RUNTIME_CONTROL_ENABLED=false，无法手动锁定机器人",
+            }
+        )
+
+    if settings.runtime_status_allow_dashboard_token:
+        checks.append(
+            {
+                "name": "runtime_status_permission",
+                "level": "OK",
+                "message": "RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN=true，Dashboard 可读取运行控制状态",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "runtime_status_permission",
+                "level": "WARN",
+                "message": "RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN=false，Dashboard 无法读取运行控制状态",
+            }
+        )
+
+    if settings.protect_journal_api and settings.protect_stats_api:
+        checks.append(
+            {
+                "name": "journal_stats_protection",
+                "level": "OK",
+                "message": "Journal 与 Stats API 均已启用 Token 保护",
+            }
+        )
+    elif settings.protect_journal_api or settings.protect_stats_api:
+        checks.append(
+            {
+                "name": "journal_stats_protection",
+                "level": "WARN",
+                "message": (
+                    f"部分 API 未保护: PROTECT_JOURNAL_API={settings.protect_journal_api}, "
+                    f"PROTECT_STATS_API={settings.protect_stats_api}"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "journal_stats_protection",
+                "level": "ERROR",
+                "message": "Journal 与 Stats API 均未启用 Token 保护",
+            }
+        )
+
+    if not symbols:
+        checks.append(
+            {
+                "name": "allowed_symbols",
+                "level": "ERROR",
+                "message": "ALLOWED_SYMBOLS 为空",
+            }
+        )
+    else:
+        symbol_level = "OK"
+        symbol_msg = f"允许交易对 {len(symbols)} 个: {', '.join(symbols)}"
+        if len(symbols) > 10:
+            symbol_level = "WARN"
+            symbol_msg = f"允许交易对数量较多 ({len(symbols)} 个)，请确认范围"
+        non_usdt = [s for s in symbols if not s.endswith("USDT")]
+        if non_usdt:
+            symbol_level = "WARN"
+            symbol_msg += f"；非常见 USDT 永续格式: {', '.join(non_usdt)}"
+        checks.append({"name": "allowed_symbols", "level": symbol_level, "message": symbol_msg})
+
+    leverage = settings.max_auto_leverage
+    if leverage > 50:
+        checks.append(
+            {
+                "name": "leverage_policy",
+                "level": "ERROR",
+                "message": f"MAX_AUTO_LEVERAGE={leverage} 过高 (>{50})",
+            }
+        )
+    elif leverage > 20:
+        checks.append(
+            {
+                "name": "leverage_policy",
+                "level": "WARN",
+                "message": f"MAX_AUTO_LEVERAGE={leverage} 偏高 (>{20})",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "leverage_policy",
+                "level": "OK",
+                "message": f"MAX_AUTO_LEVERAGE={leverage} 在推荐范围内",
+            }
+        )
+
+    entry_issues: list[str] = []
+    if settings.allow_market_entry:
+        entry_issues.append("ALLOW_MARKET_ENTRY=true")
+    if settings.default_entry_type == "market":
+        entry_issues.append("DEFAULT_ENTRY_TYPE=market")
+    if settings.default_limit_fallback_to_market:
+        entry_issues.append("DEFAULT_LIMIT_FALLBACK_TO_MARKET=true")
+    if entry_issues:
+        checks.append(
+            {
+                "name": "order_entry_policy",
+                "level": "WARN",
+                "message": f"入场策略偏激进: {', '.join(entry_issues)}",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "order_entry_policy",
+                "level": "OK",
+                "message": "限价进场为主，未启用限价超时改市价",
+            }
+        )
+    if settings.allow_limit_entry:
+        pass  # covered in OK message above
+
+    policy = settings.default_position_policy
+    policy_labels = {
+        "replace": "replace：先清理旧仓再开新仓",
+        "reverse_only": "reverse_only：仅反向信号平旧仓",
+        "ignore_same_side": "ignore_same_side：同向跳过",
+        "add": "add：保留旧仓加仓（谨慎）",
+    }
+    if settings.emergency_close_on_protection_fail:
+        checks.append(
+            {
+                "name": "protection_policy",
+                "level": "WARN",
+                "message": (
+                    f"EMERGENCY_CLOSE_ON_PROTECTION_FAIL=true，保护单失败将触发紧急平仓；"
+                    f"持仓策略={policy_labels.get(policy, policy)}"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "protection_policy",
+                "level": "OK",
+                "message": (
+                    f"保护单失败不会自动平仓；持仓策略={policy_labels.get(policy, policy)}"
+                ),
+            }
+        )
+
+    if not settings.account_risk_enabled:
+        checks.append(
+            {
+                "name": "account_risk_guard",
+                "level": "ERROR",
+                "message": "ACCOUNT_RISK_ENABLED=false，账户级风控未启用",
+            }
+        )
+    else:
+        risk_warnings: list[str] = []
+        if settings.daily_max_loss_usdt <= 0:
+            risk_warnings.append("DAILY_MAX_LOSS_USDT 未限制")
+        elif settings.daily_max_loss_usdt > 500:
+            risk_warnings.append(f"DAILY_MAX_LOSS_USDT={settings.daily_max_loss_usdt} 偏大")
+        if settings.daily_max_trades <= 0:
+            risk_warnings.append("DAILY_MAX_TRADES 未限制")
+        elif settings.daily_max_trades > 50:
+            risk_warnings.append(f"DAILY_MAX_TRADES={settings.daily_max_trades} 偏大")
+        if settings.max_open_positions <= 0:
+            risk_warnings.append("MAX_OPEN_POSITIONS 未限制")
+        elif settings.max_open_positions > 10:
+            risk_warnings.append(f"MAX_OPEN_POSITIONS={settings.max_open_positions} 偏大")
+        if settings.max_total_risk_usdt <= 0:
+            risk_warnings.append("MAX_TOTAL_RISK_USDT 未限制")
+        elif settings.max_total_risk_usdt > 1000:
+            risk_warnings.append(f"MAX_TOTAL_RISK_USDT={settings.max_total_risk_usdt} 偏大")
+        if risk_warnings:
+            checks.append(
+                {
+                    "name": "account_risk_guard",
+                    "level": "WARN",
+                    "message": f"账户风控已启用，但参数偏宽: {'; '.join(risk_warnings)}",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "account_risk_guard",
+                    "level": "OK",
+                    "message": "账户级风控已启用且参数在合理范围",
+                }
+            )
+
+    if settings.enable_trading:
+        if binance_key_meta["configured"] and binance_secret_meta["configured"]:
+            checks.append(
+                {
+                    "name": "binance_credentials",
+                    "level": "OK",
+                    "message": (
+                        "Binance API 凭证已配置 "
+                        f"(key_length={binance_key_meta['length']}, secret_length={binance_secret_meta['length']})"
+                    ),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "binance_credentials",
+                    "level": "ERROR",
+                    "message": "ENABLE_TRADING=true 但 Binance API 凭证未完整配置",
+                }
+            )
+
+    checks.append(
+        {
+            "name": "dashboard_readonly_guarantee",
+            "level": "OK",
+            "message": "Dashboard 仅展示监控信息，不提供交易操作按钮",
+        }
+    )
+
+    summary = {
+        "app_version": app_version,
+        "enable_trading": settings.enable_trading,
+        "binance_env": binance_env,
+        "runtime_control_enabled": settings.runtime_control_enabled,
+        "dashboard_protected": bool(
+            settings.dashboard_enabled
+            and settings.dashboard_require_token
+            and dashboard_token_meta["configured"]
+        ),
+        "journal_protected": settings.protect_journal_api,
+        "stats_protected": settings.protect_stats_api,
+        "allowed_symbol_count": len(symbols),
+        "allowed_symbols": symbols,
+        "max_auto_leverage": settings.max_auto_leverage,
+        "webhook_secret_configured": webhook_meta["configured"],
+        "webhook_secret_length": webhook_meta["length"],
+        "dashboard_token_configured": dashboard_token_meta["configured"],
+        "dashboard_token_length": dashboard_token_meta["length"],
+        "runtime_control_token_configured": runtime_token_meta["configured"],
+        "runtime_control_token_length": runtime_token_meta["length"],
+        "account_risk_enabled": settings.account_risk_enabled,
+    }
+
+    return {
+        "level": _aggregate_health_level(checks),
+        "checks": checks,
+        "summary": summary,
+    }
+
+
 def _check_dashboard_access(
     settings: Settings,
     *,
@@ -846,6 +1269,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <h2>告警中心</h2>
       <p class="section-note">只读聚合 · 不会自动交易、撤单、平仓或解锁</p>
       <div id="alertCenterWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>风控配置体检</h2>
+      <p class="section-note">只读检查 · 不会修改 .env 或任何配置</p>
+      <div id="riskConfigWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
@@ -1227,6 +1658,58 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </table>`;
     }}
 
+    async function loadRiskConfigSection() {{
+      const wrap = document.getElementById("riskConfigWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/risk-config");
+        renderRiskConfig(resp["配置体检"] || null);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderRiskConfig(data) {{
+      const wrap = document.getElementById("riskConfigWrap");
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无配置体检数据</div>';
+        return;
+      }}
+      const level = (data.level || "OK").toLowerCase();
+      const summary = data.summary || {{}};
+      const checks = data.checks || [];
+      const envLabel = {{
+        demo: "demo/testnet",
+        live: "live",
+        unknown: "unknown",
+      }}[summary.binance_env] || summary.binance_env || "-";
+      const summaryHtml = [
+        ["当前环境", envLabel],
+        ["允许真实下单", summary.enable_trading ? "是" : "否"],
+        ["Runtime Control", summary.runtime_control_enabled ? "已启用" : "未启用"],
+        ["Dashboard 保护", summary.dashboard_protected ? "是" : "否"],
+        ["Journal 保护", summary.journal_protected ? "是" : "否"],
+        ["Stats 保护", summary.stats_protected ? "是" : "否"],
+        ["允许交易对数", summary.allowed_symbol_count ?? "-"],
+        ["最大杠杆", summary.max_auto_leverage ?? "-"],
+        ["Webhook 已配置", summary.webhook_secret_configured ? "是" : "否"],
+        ["Dashboard Token 已配置", summary.dashboard_token_configured ? "是" : "否"],
+      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
+      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
+        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
+        <tbody>${{checks.map((c) => `<tr>
+          <td class="mono">${{esc(c.name)}}</td>
+          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
+          <td>${{esc(c.message)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>` : '<div class="empty">无检查项</div>';
+      wrap.innerHTML = `
+        <div class="health-level ${{level}}">总体等级: ${{esc(data.level || "OK")}}</div>
+        <div class="detail-meta">${{summaryHtml}}</div>
+        <h3 class="subsection-title">风控提示</h3>
+        ${{checksHtml}}
+      `;
+    }}
+
     async function loadAlertsSection() {{
       const wrap = document.getElementById("alertCenterWrap");
       try {{
@@ -1363,6 +1846,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       }}
       await loadHealthOverviewSection();
       await loadAlertsSection();
+      await loadRiskConfigSection();
       await loadRuntimeControlSection();
     }}
 
@@ -1715,5 +2199,35 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, **payload})
+
+    @router.get("/api/risk-config")
+    async def api_risk_config(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            inspector = build_risk_config_inspector(settings, app_version)
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "配置体检": {
+                        "level": "ERROR",
+                        "checks": [
+                            {
+                                "name": "risk_config_inspector",
+                                "level": "ERROR",
+                                "message": f"配置体检失败: {str(exc)[:200]}",
+                            }
+                        ],
+                        "summary": {},
+                    },
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "配置体检": inspector})
 
     return router

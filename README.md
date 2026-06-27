@@ -459,6 +459,7 @@ GET /dashboard/api/runtime-control/status
 GET /dashboard/api/runtime-control/events?limit=10
 GET /dashboard/api/health-overview
 GET /dashboard/api/alerts?limit=20
+GET /dashboard/api/risk-config
 ```
 
 - 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
@@ -551,4 +552,69 @@ GET /dashboard/api/alerts?limit=20
 | **INFO** | Runtime 解锁、自动过期 |
 
 页面新增 **「告警中心」** 区块：ERROR/WARN/INFO 计数、最新等级、告警表格。
+
+## Risk Config Inspector / 风控配置体检（v5.8）
+
+Dashboard **只读**检查当前 `.env` / Settings 中的交易、安全、风控、Runtime、Dashboard 配置是否合理。
+
+**不会**修改配置、自动修复、下单、撤单、平仓或解锁。
+
+### Dashboard API
+
+```text
+GET /dashboard/api/risk-config
+```
+
+- 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
+- **不接受** `RUNTIME_CONTROL_TOKEN`
+- 无 token 或错误 token 返回「Dashboard Token 无效」
+- 不返回任何 secret/token/API key 明文；仅展示是否已配置及长度
+
+### 返回结构
+
+```json
+{
+  "成功": true,
+  "配置体检": {
+    "level": "OK|WARN|ERROR",
+    "checks": [{"name": "...", "level": "...", "message": "..."}],
+    "summary": {
+      "app_version": "1.11.0",
+      "enable_trading": false,
+      "binance_env": "demo",
+      "runtime_control_enabled": true,
+      "dashboard_protected": true,
+      "journal_protected": true,
+      "stats_protected": true,
+      "allowed_symbol_count": 3,
+      "max_auto_leverage": 20
+    }
+  }
+}
+```
+
+### 检查范围
+
+| 检查项 | 说明 |
+|--------|------|
+| `binance_environment` | demo/testnet vs 实盘 endpoint |
+| `enable_trading` | 真实交易开关 |
+| `webhook_secret` | Webhook 密钥是否配置、长度 |
+| `dashboard_token` | Dashboard Token 保护 |
+| `runtime_control` | Runtime Control 启用与 Token |
+| `journal_stats_protection` | Journal / Stats API 保护 |
+| `allowed_symbols` | 白名单交易对数量与格式 |
+| `leverage_policy` | 最大自动杠杆 |
+| `order_entry_policy` | 市价/限价入场策略 |
+| `protection_policy` | 保护单失败策略与持仓策略 |
+| `account_risk_guard` | 账户级风控开关与参数 |
+| `dashboard_readonly_guarantee` | Dashboard 只读保证 |
+
+### 风险等级
+
+- 任一检查项为 **ERROR** → 总体 **ERROR**
+- 否则任一 **WARN** → 总体 **WARN**
+- 否则 **OK**
+
+页面新增 **「风控配置体检」** 区块：总体等级、环境摘要、风控提示表格。接口失败时仅影响该区块，不影响整页。
 
