@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -8,8 +9,133 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .stats import TradeStatsService
 
 if TYPE_CHECKING:
+    from .binance_client import BinanceClient
     from .config import Settings
     from .storage import TradeJournalStore
+
+
+def verify_dashboard_token(
+    settings: Settings,
+    *,
+    query_token: str | None,
+    header_token: str | None,
+) -> None:
+    if not settings.dashboard_token:
+        raise HTTPException(status_code=403, detail="Dashboard Token 未配置")
+    provided = header_token or query_token
+    if not provided or provided != settings.dashboard_token:
+        raise HTTPException(status_code=401, detail="Dashboard Token 无效")
+
+
+def require_api_token_if_protected(
+    settings: Settings,
+    *,
+    protect: bool,
+    query_token: str | None,
+    header_token: str | None,
+) -> None:
+    if not protect:
+        return
+    verify_dashboard_token(settings, query_token=query_token, header_token=header_token)
+
+
+def _position_side_from_amt(amt_raw: Any) -> str:
+    try:
+        amt = Decimal(str(amt_raw))
+    except Exception:
+        return "FLAT"
+    if amt > 0:
+        return "LONG"
+    if amt < 0:
+        return "SHORT"
+    return "FLAT"
+
+
+def build_runtime_config(settings: Settings, app_version: str) -> dict[str, Any]:
+    return {
+        "app_version": app_version,
+        "enable_trading": settings.enable_trading,
+        "binance_base_url": settings.binance_base_url,
+        "allowed_symbols": sorted(settings.allowed_symbol_set),
+        "position_mode": settings.position_mode,
+        "account_risk_enabled": settings.account_risk_enabled,
+        "dashboard_enabled": settings.dashboard_enabled,
+        "dashboard_require_token": settings.dashboard_require_token,
+        "default_position_policy": settings.default_position_policy,
+        "allow_market_entry": settings.allow_market_entry,
+        "allow_limit_entry": settings.allow_limit_entry,
+        "default_entry_type": settings.default_entry_type,
+        "default_limit_fallback_to_market": settings.default_limit_fallback_to_market,
+        "max_auto_leverage": settings.max_auto_leverage,
+        "emergency_close_on_protection_fail": settings.emergency_close_on_protection_fail,
+    }
+
+
+def build_dashboard_positions(client: BinanceClient) -> list[dict[str, Any]]:
+    rows = client.non_zero_positions()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append(
+            {
+                "symbol": row.get("symbol"),
+                "side": _position_side_from_amt(row.get("positionAmt", "0")),
+                "positionAmt": str(row.get("positionAmt", "0")),
+                "entryPrice": str(row.get("entryPrice", "")),
+                "markPrice": str(row.get("markPrice", "")),
+                "unRealizedProfit": str(row.get("unRealizedProfit", row.get("unrealizedProfit", ""))),
+                "notional": str(row.get("notional", "")),
+                "initialMargin": str(row.get("initialMargin", "")),
+                "liquidationPrice": str(row.get("liquidationPrice", "")),
+            }
+        )
+    return result
+
+
+def build_dashboard_algo_orders(settings: Settings, client: BinanceClient) -> list[dict[str, Any]]:
+    symbols = sorted(settings.allowed_symbol_set)
+    if not symbols:
+        return []
+    result: list[dict[str, Any]] = []
+    for symbol in symbols:
+        try:
+            rows = client.open_algo_orders(symbol)
+        except Exception:
+            continue
+        rows = rows if isinstance(rows, list) else [rows]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            result.append(
+                {
+                    "symbol": row.get("symbol") or symbol,
+                    "orderType": row.get("orderType") or row.get("type"),
+                    "side": row.get("side"),
+                    "triggerPrice": str(row.get("triggerPrice") or row.get("stopPrice") or ""),
+                    "quantity": str(row.get("quantity") or row.get("origQty") or ""),
+                    "reduceOnly": row.get("reduceOnly"),
+                    "closePosition": row.get("closePosition"),
+                    "algoStatus": row.get("algoStatus") or row.get("status"),
+                    "workingType": row.get("workingType"),
+                    "createTime": row.get("createTime") or row.get("bookTime"),
+                }
+            )
+    return result
+
+
+def build_dashboard_health(settings: Settings, client: BinanceClient) -> dict[str, Any]:
+    from .zh import to_jsonable
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "enable_trading": settings.enable_trading,
+        "binance_base_url": settings.binance_base_url,
+        "allowed_symbols": sorted(settings.allowed_symbol_set),
+    }
+    try:
+        payload["account"] = to_jsonable(client.futures_balance())
+    except Exception as exc:
+        payload["account_error"] = str(exc)[:500]
+    return payload
 
 
 def _check_dashboard_access(
@@ -22,11 +148,7 @@ def _check_dashboard_access(
         raise HTTPException(status_code=404, detail="Dashboard 未启用")
     if not settings.dashboard_require_token:
         return
-    if not settings.dashboard_token:
-        raise HTTPException(status_code=403, detail="Dashboard Token 未配置")
-    provided = header_token or query_token
-    if not provided or provided != settings.dashboard_token:
-        raise HTTPException(status_code=401, detail="Dashboard Token 无效")
+    verify_dashboard_token(settings, query_token=query_token, header_token=header_token)
 
 
 def _error_html(title: str, message: str) -> str:
@@ -175,6 +297,26 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     </div>
 
     <section>
+      <h2>运行状态</h2>
+      <div class="detail-meta" id="runtimeMeta"></div>
+      <div class="detail-meta" id="healthMeta" style="margin-top:0.5rem"></div>
+    </section>
+
+    <section>
+      <h2>当前持仓</h2>
+      <div style="overflow-x:auto" id="positionsWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>当前条件单</h2>
+      <div style="overflow-x:auto" id="algoOrdersWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
       <h2>最近执行记录</h2>
       <div class="toolbar">
         <label>交易对<input id="filterSymbol" placeholder="BTCUSDT" /></label>
@@ -314,6 +456,100 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       }});
     }}
 
+    const RUNTIME_LABELS = {{
+      app_version: "应用版本",
+      enable_trading: "允许真实下单",
+      binance_base_url: "币安接口",
+      allowed_symbols: "允许交易对",
+      position_mode: "持仓模式",
+      account_risk_enabled: "账户风控",
+      dashboard_enabled: "Dashboard 启用",
+      dashboard_require_token: "Dashboard 需 Token",
+      default_position_policy: "默认持仓策略",
+      allow_market_entry: "允许市价进场",
+      allow_limit_entry: "允许限价进场",
+      default_entry_type: "默认进场方式",
+      default_limit_fallback_to_market: "限价超时改市价",
+      max_auto_leverage: "最大自动杠杆",
+      emergency_close_on_protection_fail: "保护失败紧急平仓",
+    }};
+
+    const HEALTH_LABELS = {{
+      ok: "服务正常",
+      enable_trading: "允许真实下单",
+      binance_base_url: "币安接口",
+      allowed_symbols: "允许交易对",
+      account_error: "账户查询错误",
+    }};
+
+    function renderKeyValueGrid(containerId, data, labels) {{
+      const el = document.getElementById(containerId);
+      if (!data) {{
+        el.innerHTML = '<div class="empty">暂无数据</div>';
+        return;
+      }}
+      el.innerHTML = Object.entries(data).map(([key, val]) => {{
+        if (key === "account") return "";
+        const label = labels[key] || key;
+        let display = val;
+        if (Array.isArray(val)) display = val.join(", ");
+        if (typeof val === "boolean") display = val ? "是" : "否";
+        if (val === null || val === undefined) display = "-";
+        return `<div><span>${{esc(label)}}</span>${{esc(display)}}</div>`;
+      }}).join("");
+    }}
+
+    function renderPositions(rows) {{
+      const wrap = document.getElementById("positionsWrap");
+      if (!rows || rows.length === 0) {{
+        wrap.innerHTML = '<div class="empty">当前无持仓</div>';
+        return;
+      }}
+      wrap.innerHTML = `<table>
+        <thead><tr>
+          <th>交易对</th><th>方向</th><th>数量</th><th>开仓价</th><th>标记价</th>
+          <th>未实现盈亏</th><th>名义价值</th><th>初始保证金</th><th>强平价</th>
+        </tr></thead>
+        <tbody>${{rows.map((row) => `<tr>
+          <td>${{esc(row.symbol)}}</td>
+          <td>${{esc(row.side)}}</td>
+          <td>${{esc(row.positionAmt)}}</td>
+          <td>${{esc(row.entryPrice)}}</td>
+          <td>${{esc(row.markPrice)}}</td>
+          <td>${{esc(row.unRealizedProfit)}}</td>
+          <td>${{esc(row.notional)}}</td>
+          <td>${{esc(row.initialMargin)}}</td>
+          <td>${{esc(row.liquidationPrice)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>`;
+    }}
+
+    function renderAlgoOrders(rows) {{
+      const wrap = document.getElementById("algoOrdersWrap");
+      if (!rows || rows.length === 0) {{
+        wrap.innerHTML = '<div class="empty">当前无条件单</div>';
+        return;
+      }}
+      wrap.innerHTML = `<table>
+        <thead><tr>
+          <th>交易对</th><th>类型</th><th>方向</th><th>触发价</th><th>数量</th>
+          <th>只减仓</th><th>全平</th><th>状态</th><th>触发类型</th><th>创建时间</th>
+        </tr></thead>
+        <tbody>${{rows.map((row) => `<tr>
+          <td>${{esc(row.symbol)}}</td>
+          <td>${{esc(row.orderType)}}</td>
+          <td>${{esc(row.side)}}</td>
+          <td>${{esc(row.triggerPrice)}}</td>
+          <td>${{esc(row.quantity)}}</td>
+          <td>${{esc(row.reduceOnly)}}</td>
+          <td>${{esc(row.closePosition)}}</td>
+          <td>${{esc(row.algoStatus)}}</td>
+          <td>${{esc(row.workingType)}}</td>
+          <td class="mono">${{esc(row.createTime)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>`;
+    }}
+
     function renderExecutions(rows) {{
       const body = document.getElementById("executionsBody");
       if (!rows || rows.length === 0) {{
@@ -383,13 +619,21 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       if (status) params.set("status", status);
 
       try {{
-        const [summaryResp, execResp, bySymbolResp, rejectResp] = await Promise.all([
+        const [summaryResp, execResp, bySymbolResp, rejectResp, runtimeResp, healthResp, posResp, algoResp] = await Promise.all([
           apiFetch("/dashboard/api/summary"),
           apiFetch("/dashboard/api/executions?" + params.toString()),
           apiFetch("/dashboard/api/by-symbol"),
           apiFetch("/dashboard/api/rejections"),
+          apiFetch("/dashboard/api/runtime"),
+          apiFetch("/dashboard/api/health"),
+          apiFetch("/dashboard/api/positions"),
+          apiFetch("/dashboard/api/algo-orders"),
         ]);
         renderSummary(summaryResp["统计"] || {{}});
+        renderKeyValueGrid("runtimeMeta", runtimeResp["运行配置"] || {{}}, RUNTIME_LABELS);
+        renderKeyValueGrid("healthMeta", healthResp["健康"] || {{}}, HEALTH_LABELS);
+        renderPositions(posResp["持仓"] || []);
+        renderAlgoOrders(algoResp["条件单"] || []);
         renderExecutions(execResp["记录"] || []);
         renderBySymbol(bySymbolResp["按交易对"] || []);
         renderRejections(rejectResp["拒绝统计"] || []);
@@ -463,6 +707,8 @@ def create_dashboard_router(
     settings: Settings,
     journal_store: TradeJournalStore,
     trade_stats: TradeStatsService,
+    client: BinanceClient,
+    app_version: str,
 ) -> APIRouter:
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -594,5 +840,57 @@ def create_dashboard_router(
                 "订单": [TradeStatsService.order_brief(row) for row in rows],
             }
         )
+
+    @router.get("/api/runtime")
+    async def api_runtime(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        return JSONResponse(
+            content={"成功": True, "运行配置": build_runtime_config(settings, app_version)}
+        )
+
+    @router.get("/api/positions")
+    async def api_positions(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            rows = build_dashboard_positions(client)
+        except Exception as exc:
+            return JSONResponse(
+                content={"成功": False, "错误": str(exc)[:500], "持仓": []},
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "数量": len(rows), "持仓": rows})
+
+    @router.get("/api/algo-orders")
+    async def api_algo_orders(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            rows = build_dashboard_algo_orders(settings, client)
+        except Exception as exc:
+            return JSONResponse(
+                content={"成功": False, "错误": str(exc)[:500], "条件单": []},
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "数量": len(rows), "条件单": rows})
+
+    @router.get("/api/health")
+    async def api_health(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        return JSONResponse(content={"成功": True, "健康": build_dashboard_health(settings, client)})
 
     return router

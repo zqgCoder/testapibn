@@ -7,7 +7,7 @@ from dataclasses import asdict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -19,7 +19,7 @@ from app.storage import AccountRiskStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
 from app.journal import TradeJournal
 from app.stats import TradeStatsService
-from app.dashboard import create_dashboard_router
+from app.dashboard import create_dashboard_router, require_api_token_if_protected
 from app.trader import Trader
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
@@ -46,9 +46,11 @@ trade_stats = TradeStatsService(journal_store)
 trader = Trader(settings, client, rules, account_risk=account_risk)
 store = SignalStore(settings.sqlite_path)
 
-app = FastAPI(title="TradingView to Binance Futures Bot", version="1.5.0")
+APP_VERSION = "1.6.0"
 
-app.include_router(create_dashboard_router(settings, journal_store, trade_stats))
+app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
+
+app.include_router(create_dashboard_router(settings, journal_store, trade_stats, client, APP_VERSION))
 
 
 @app.exception_handler(RequestValidationError)
@@ -262,7 +264,19 @@ async def plan_only(signal: TradingViewSignal):
 
 
 @app.get("/journal/executions")
-async def journal_executions(limit: int = 50, symbol: str | None = None, status: str | None = None):
+async def journal_executions(
+    limit: int = 50,
+    symbol: str | None = None,
+    status: str | None = None,
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_journal_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     rows = journal_store.list_executions(limit=limit, symbol=symbol, status=status)
     return JSONResponse(
         content={
@@ -274,7 +288,17 @@ async def journal_executions(limit: int = 50, symbol: str | None = None, status:
 
 
 @app.get("/journal/executions/{execution_id}")
-async def journal_execution_detail(execution_id: int):
+async def journal_execution_detail(
+    execution_id: int,
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_journal_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     row = journal_store.get_execution(execution_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"执行记录不存在: {execution_id}")
@@ -287,7 +311,17 @@ async def journal_execution_detail(execution_id: int):
 
 
 @app.get("/journal/orders/{execution_id}")
-async def journal_orders(execution_id: int):
+async def journal_orders(
+    execution_id: int,
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_journal_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     if journal_store.get_execution(execution_id) is None:
         raise HTTPException(status_code=404, detail=f"执行记录不存在: {execution_id}")
     rows = journal_store.list_orders(execution_id)
@@ -302,7 +336,16 @@ async def journal_orders(execution_id: int):
 
 
 @app.get("/stats/summary")
-async def stats_summary():
+async def stats_summary(
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_stats_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     return JSONResponse(
         content={
             "成功": True,
@@ -312,7 +355,16 @@ async def stats_summary():
 
 
 @app.get("/stats/by-symbol")
-async def stats_by_symbol():
+async def stats_by_symbol(
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_stats_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     rows = trade_stats.by_symbol()
     return JSONResponse(
         content={
@@ -324,7 +376,17 @@ async def stats_by_symbol():
 
 
 @app.get("/stats/rejections")
-async def stats_rejections(limit: int = 20):
+async def stats_rejections(
+    limit: int = 20,
+    token: str | None = Query(None),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    require_api_token_if_protected(
+        settings,
+        protect=settings.protect_stats_api,
+        query_token=token,
+        header_token=x_dashboard_token,
+    )
     rows = trade_stats.rejections(limit=limit)
     return JSONResponse(
         content={

@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     dashboard_require_token: bool = Field(default=True, alias="DASHBOARD_REQUIRE_TOKEN")
     dashboard_token: str = Field(default="", alias="DASHBOARD_TOKEN")
     dashboard_auto_refresh_sec: int = Field(default=10, alias="DASHBOARD_AUTO_REFRESH_SEC")
+    protect_journal_api: bool = Field(default=False, alias="PROTECT_JOURNAL_API")
+    protect_stats_api: bool = Field(default=False, alias="PROTECT_STATS_API")
 
     @property
     def allowed_symbol_set(self) -> set[str]:
@@ -135,6 +137,10 @@ class Settings(BaseSettings):
         ):
             raise RuntimeError(
                 "DASHBOARD_TOKEN is required when DASHBOARD_ENABLED=true and DASHBOARD_REQUIRE_TOKEN=true"
+            )
+        if (self.protect_journal_api or self.protect_stats_api) and not self.dashboard_token.strip():
+            raise RuntimeError(
+                "DASHBOARD_TOKEN is required when PROTECT_JOURNAL_API or PROTECT_STATS_API is true"
             )
 
 

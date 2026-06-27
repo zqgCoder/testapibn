@@ -352,9 +352,44 @@ GET /dashboard/api/rejections
 GET /dashboard/api/executions?limit=50&symbol=BTCUSDT&status=protected
 GET /dashboard/api/executions/{execution_id}
 GET /dashboard/api/orders/{execution_id}
+GET /dashboard/api/runtime
+GET /dashboard/api/health
+GET /dashboard/api/positions
+GET /dashboard/api/algo-orders
 ```
 
 Token 可通过请求头 `X-Dashboard-Token` 或 query 参数 `?token=` 传递。
 
-原有的 `/journal/*` 与 `/stats/*` 接口保持不变，不受 Dashboard 开关影响。
+原有的 `/journal/*` 与 `/stats/*` 接口默认不受 Dashboard 开关影响；可通过下方配置单独启用 Token 保护。
+
+## Dashboard 安全增强 + 账户状态（v5 Phase 4）
+
+### 新增配置
+
+```env
+PROTECT_JOURNAL_API=false
+PROTECT_STATS_API=false
+```
+
+- `PROTECT_JOURNAL_API=true` 时，`/journal/*` 必须携带与 `DASHBOARD_TOKEN` 相同的 Token（请求头 `X-Dashboard-Token` 或 `?token=`）。
+- `PROTECT_STATS_API=true` 时，`/stats/*` 同上。
+- 默认 `false`，保持 v5.1 无 Token 行为；**公网部署时建议开启**，避免未保护的 journal/stats 被直接访问。
+
+启用任一保护项时，必须在 `.env` 中设置 `DASHBOARD_TOKEN`。
+
+### 新增 Dashboard API
+
+```text
+GET /dashboard/api/runtime      脱敏运行配置（不含任何 secret）
+GET /dashboard/api/health       服务健康 + 账户余额（失败时返回 account_error，不 500）
+GET /dashboard/api/positions    当前非 0 持仓
+GET /dashboard/api/algo-orders  ALLOWED_SYMBOLS 下所有条件单
+```
+
+Dashboard 页面新增三个只读区域：**运行状态**、**当前持仓**、**当前条件单**。仍无任何下单/平仓/改配置按钮。
+
+### 安全提示
+
+- 不要在页面或 API 响应中暴露 `BINANCE_API_KEY`、`BINANCE_API_SECRET`、`WEBHOOK_SECRET`、`DASHBOARD_TOKEN`。
+- 若 Dashboard 或 journal/stats 需公网访问，务必启用 Token 保护并使用 HTTPS 反向代理。
 
