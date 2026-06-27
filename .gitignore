@@ -45,3 +45,7 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+
+examples/local_market_test.json
+examples/local_limit_test.json
