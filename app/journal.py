@@ -14,6 +14,7 @@ class ExecutionStatus:
     BLOCKED_BY_ACCOUNT_RISK = "blocked_by_account_risk"
     BLOCKED_BY_RUNTIME_LOCK = "blocked_by_runtime_lock"
     SKIPPED_BY_POSITION_POLICY = "skipped_by_position_policy"
+    TV_SANDBOX_REJECTED = "tv_sandbox_rejected"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
     PROTECTION_FAILED = "protection_failed"
@@ -32,6 +33,7 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.BLOCKED_BY_ACCOUNT_RISK: "账户风控拒绝",
     ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK: "运行锁定拒绝",
     ExecutionStatus.SKIPPED_BY_POSITION_POLICY: "持仓策略跳过",
+    ExecutionStatus.TV_SANDBOX_REJECTED: "TV沙盒拒绝",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
@@ -54,6 +56,8 @@ def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
     if skip_reason == "runtime_locked":
         return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
+    if skip_reason and str(skip_reason).startswith("tv_"):
+        return ExecutionStatus.TV_SANDBOX_REJECTED
     if skip_reason in ACCOUNT_RISK_SKIP_REASONS:
         return ExecutionStatus.BLOCKED_BY_ACCOUNT_RISK
     if skip_reason == "same_side_position_exists":
@@ -259,6 +263,68 @@ class TradeJournal:
             return execution_id
         except Exception as exc:
             logger.warning("Failed to persist trade journal execution: signal_key=%s error=%s", signal_key, exc)
+            return None
+
+    def persist_tv_sandbox_rejection(
+        self,
+        signal_key: str,
+        raw_payload: dict,
+        rejection,
+        signal: TradingViewSignal | None = None,
+    ) -> int | None:
+        try:
+            result = {
+                "orders": {},
+                "skipped": True,
+                "skip_reason": rejection.skip_reason,
+                "tv_sandbox": {
+                    "rejected": True,
+                    "message": rejection.message,
+                    "invalid_fields": rejection.invalid_fields,
+                },
+            }
+            if signal is not None:
+                return self.persist_execution(signal, signal_key, raw_payload, result)
+
+            symbol = str(raw_payload.get("symbol") or "").upper().replace("BINANCE:", "").replace(".P", "")
+            side = str(raw_payload.get("side") or "")
+            entry_type = raw_payload.get("entry_type")
+            execution_id = self.store.insert_execution(
+                {
+                    "signal_key": signal_key,
+                    "signal_id": raw_payload.get("signal_id"),
+                    "symbol": symbol or None,
+                    "side": side or None,
+                    "entry_type": entry_type,
+                    "risk_mode": raw_payload.get("risk_mode"),
+                    "position_policy": raw_payload.get("position_policy"),
+                    "status": ExecutionStatus.TV_SANDBOX_REJECTED,
+                    "skip_reason": rejection.skip_reason,
+                    "error_message": rejection.message[:2000],
+                    "planned_qty": None,
+                    "filled_qty": None,
+                    "entry_price": None,
+                    "stop_loss_price": None,
+                    "target_risk_usdt": None,
+                    "estimated_total_loss_at_sl": None,
+                    "leverage": None,
+                    "account_risk_allowed": None,
+                    "account_risk_skip_reason": None,
+                    "raw_signal_json": journal_json_dumps(raw_payload),
+                    "plan_json": None,
+                    "account_risk_json": None,
+                    "entry_summary_json": None,
+                    "protection_summary_json": None,
+                    "result_json": journal_json_dumps(result),
+                }
+            )
+            return execution_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist TV sandbox rejection: signal_key=%s error=%s",
+                signal_key,
+                exc,
+            )
             return None
 
     def persist_failure(

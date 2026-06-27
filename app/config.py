@@ -87,6 +87,28 @@ class Settings(BaseSettings):
         default=True, alias="RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN"
     )
 
+    # ===== V5.9 TradingView Signal Sandbox =====
+    tv_signal_sandbox_enabled: bool = Field(default=True, alias="TV_SIGNAL_SANDBOX_ENABLED")
+    tv_signal_require_source: bool = Field(default=True, alias="TV_SIGNAL_REQUIRE_SOURCE")
+    tv_signal_allowed_sources: str = Field(
+        default="tradingview,tv_sandbox", alias="TV_SIGNAL_ALLOWED_SOURCES"
+    )
+    tv_signal_id_prefix: str = Field(default="TV-", alias="TV_SIGNAL_ID_PREFIX")
+    tv_signal_max_risk_usdt: float = Field(default=5, alias="TV_SIGNAL_MAX_RISK_USDT")
+    tv_signal_max_margin_usdt: float = Field(default=100, alias="TV_SIGNAL_MAX_MARGIN_USDT")
+    tv_signal_allowed_entry_types: str = Field(
+        default="market,limit", alias="TV_SIGNAL_ALLOWED_ENTRY_TYPES"
+    )
+    tv_signal_reject_live_binance: bool = Field(default=True, alias="TV_SIGNAL_REJECT_LIVE_BINANCE")
+
+    @property
+    def tv_signal_allowed_source_set(self) -> set[str]:
+        return {s.strip().lower() for s in self.tv_signal_allowed_sources.split(",") if s.strip()}
+
+    @property
+    def tv_signal_allowed_entry_type_set(self) -> set[str]:
+        return {s.strip().lower() for s in self.tv_signal_allowed_entry_types.split(",") if s.strip()}
+
     @property
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}
@@ -159,6 +181,16 @@ class Settings(BaseSettings):
                 "RUNTIME_CONTROL_TOKEN is required when RUNTIME_CONTROL_ENABLED=true "
                 "and RUNTIME_CONTROL_REQUIRE_TOKEN=true"
             )
+        if self.tv_signal_max_risk_usdt < 0:
+            raise RuntimeError("TV_SIGNAL_MAX_RISK_USDT must be >= 0")
+        if self.tv_signal_max_margin_usdt < 0:
+            raise RuntimeError("TV_SIGNAL_MAX_MARGIN_USDT must be >= 0")
+        if not self.tv_signal_allowed_source_set:
+            raise RuntimeError("TV_SIGNAL_ALLOWED_SOURCES must not be empty")
+        if not self.tv_signal_allowed_entry_type_set:
+            raise RuntimeError("TV_SIGNAL_ALLOWED_ENTRY_TYPES must not be empty")
+        if self.tv_signal_sandbox_enabled and not self.tv_signal_id_prefix.strip():
+            raise RuntimeError("TV_SIGNAL_ID_PREFIX must not be empty when TV_SIGNAL_SANDBOX_ENABLED=true")
 
 
 @lru_cache(maxsize=1)

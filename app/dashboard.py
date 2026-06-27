@@ -7,12 +7,13 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .stats import TradeStatsService
+from .storage import TradeJournalStore
+from .tv_sandbox import binance_env_label, is_tv_execution_row
 
 if TYPE_CHECKING:
     from .binance_client import BinanceClient
     from .config import Settings
     from .runtime_control import RuntimeControl
-    from .storage import TradeJournalStore
 
 
 def verify_dashboard_token(
@@ -485,6 +486,7 @@ _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
     "protection_failed": ("ERROR", "保护单失败"),
     "blocked_by_account_risk": ("WARN", "账户风控拒绝"),
     "blocked_by_runtime_lock": ("WARN", "信号被 Runtime Lock 拦截"),
+    "tv_sandbox_rejected": ("WARN", "TradingView 信号被沙盒拒绝"),
     "entry_not_filled": ("WARN", "信号未成交"),
     "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
 }
@@ -522,13 +524,15 @@ def _alert_from_health_check(check: dict[str, str], *, created_at: str | None) -
 
 def _alert_from_journal_row(row: dict[str, Any]) -> dict[str, Any] | None:
     status = str(row.get("status") or "")
+    skip_reason = row.get("skip_reason")
     rule = _JOURNAL_ALERT_RULES.get(status)
+    if rule is None and skip_reason and str(skip_reason).startswith("tv_"):
+        rule = ("WARN", "TradingView 信号被沙盒拒绝")
     if rule is None:
         return None
     level, title = rule
     symbol = row.get("symbol")
     signal_id = row.get("signal_id")
-    skip_reason = row.get("skip_reason")
     exec_id = row.get("id")
     message_parts = [str(symbol or "")]
     if signal_id:
@@ -668,19 +672,37 @@ def _secret_meta(value: str) -> dict[str, bool | int]:
     return {"configured": bool(stripped), "length": len(stripped)}
 
 
-def _binance_env_label(base_url: str) -> str:
-    url = base_url.lower()
-    if "demo-fapi" in url or "testnet" in url:
-        return "demo"
-    if "fapi.binance.com" in url and "demo" not in url and "testnet" not in url:
-        return "live"
-    return "unknown"
+def build_tv_sandbox_status(settings: Settings, journal_store: TradeJournalStore) -> dict[str, Any]:
+    last_tv_execution = None
+    for row in journal_store.list_executions(limit=100):
+        if is_tv_execution_row(row, settings):
+            last_tv_execution = {
+                "id": row.get("id"),
+                "signal_id": row.get("signal_id"),
+                "symbol": row.get("symbol"),
+                "status": row.get("status"),
+                "skip_reason": row.get("skip_reason"),
+                "created_at": row.get("created_at"),
+            }
+            break
+    return {
+        "enabled": settings.tv_signal_sandbox_enabled,
+        "binance_env": binance_env_label(settings.binance_base_url),
+        "reject_live_binance": settings.tv_signal_reject_live_binance,
+        "allowed_sources": sorted(settings.tv_signal_allowed_source_set),
+        "signal_id_prefix": settings.tv_signal_id_prefix,
+        "max_risk_usdt": settings.tv_signal_max_risk_usdt,
+        "max_margin_usdt": settings.tv_signal_max_margin_usdt,
+        "allowed_entry_types": sorted(settings.tv_signal_allowed_entry_type_set),
+        "require_source": settings.tv_signal_require_source,
+        "last_tv_execution": last_tv_execution,
+    }
 
 
 def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[str, Any]:
     checks: list[dict[str, str]] = []
     symbols = sorted(settings.allowed_symbol_set)
-    binance_env = _binance_env_label(settings.binance_base_url)
+    binance_env = binance_env_label(settings.binance_base_url)
     webhook_meta = _secret_meta(settings.webhook_secret)
     dashboard_token_meta = _secret_meta(settings.dashboard_token)
     runtime_token_meta = _secret_meta(settings.runtime_control_token)
@@ -1047,6 +1069,95 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
                 }
             )
 
+    if settings.tv_signal_sandbox_enabled:
+        checks.append(
+            {
+                "name": "tv_signal_sandbox",
+                "level": "OK",
+                "message": "TV Signal Sandbox 已启用，TradingView 信号将受沙盒校验",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "tv_signal_sandbox",
+                "level": "WARN",
+                "message": "TV_SIGNAL_SANDBOX_ENABLED=false，TradingView 信号未启用沙盒保护",
+            }
+        )
+
+    if settings.tv_signal_sandbox_enabled:
+        if settings.tv_signal_reject_live_binance and binance_env == "demo":
+            checks.append(
+                {
+                    "name": "tv_signal_live_guard",
+                    "level": "OK",
+                    "message": "demo/testnet 环境且 TV_SIGNAL_REJECT_LIVE_BINANCE=true",
+                }
+            )
+        elif settings.tv_signal_reject_live_binance and binance_env == "live":
+            checks.append(
+                {
+                    "name": "tv_signal_live_guard",
+                    "level": "ERROR",
+                    "message": "TV Sandbox 已启用但 Binance 为实盘 endpoint，TV 信号将被拒绝",
+                }
+            )
+        elif not settings.tv_signal_reject_live_binance:
+            checks.append(
+                {
+                    "name": "tv_signal_live_guard",
+                    "level": "WARN",
+                    "message": "TV_SIGNAL_REJECT_LIVE_BINANCE=false，TV 信号可能在实盘 endpoint 执行",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "tv_signal_live_guard",
+                    "level": "WARN",
+                    "message": f"无法识别 Binance 环境 ({binance_env})，请确认 endpoint",
+                }
+            )
+
+    risk_level = "OK"
+    risk_msg = f"TV_SIGNAL_MAX_RISK_USDT={settings.tv_signal_max_risk_usdt}"
+    if settings.tv_signal_max_risk_usdt > 10:
+        risk_level = "WARN"
+        risk_msg += " 偏高 (>10)"
+    checks.append({"name": "tv_signal_risk_limit", "level": risk_level, "message": risk_msg})
+
+    prefix = settings.tv_signal_id_prefix.strip()
+    if not prefix:
+        checks.append(
+            {
+                "name": "tv_signal_source_policy",
+                "level": "ERROR",
+                "message": "TV_SIGNAL_ID_PREFIX 为空",
+            }
+        )
+    elif not settings.tv_signal_allowed_source_set:
+        checks.append(
+            {
+                "name": "tv_signal_source_policy",
+                "level": "ERROR",
+                "message": "TV_SIGNAL_ALLOWED_SOURCES 为空",
+            }
+        )
+    else:
+        source_msg = (
+            f"require_source={settings.tv_signal_require_source}, "
+            f"allowed={', '.join(sorted(settings.tv_signal_allowed_source_set))}, "
+            f"prefix={prefix}"
+        )
+        checks.append(
+            {
+                "name": "tv_signal_source_policy",
+                "level": "OK",
+                "message": source_msg,
+            }
+        )
+
     checks.append(
         {
             "name": "dashboard_readonly_guarantee",
@@ -1077,6 +1188,9 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         "runtime_control_token_configured": runtime_token_meta["configured"],
         "runtime_control_token_length": runtime_token_meta["length"],
         "account_risk_enabled": settings.account_risk_enabled,
+        "tv_signal_sandbox_enabled": settings.tv_signal_sandbox_enabled,
+        "tv_signal_max_risk_usdt": settings.tv_signal_max_risk_usdt,
+        "tv_signal_id_prefix": settings.tv_signal_id_prefix,
     }
 
     return {
@@ -1277,6 +1391,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <h2>风控配置体检</h2>
       <p class="section-note">只读检查 · 不会修改 .env 或任何配置</p>
       <div id="riskConfigWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>TradingView 沙盒</h2>
+      <p class="section-note">只读展示 · 仅允许 demo/testnet 接入演练</p>
+      <div id="tvSandboxWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
@@ -1658,6 +1780,51 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </table>`;
     }}
 
+    async function loadTvSandboxSection() {{
+      const wrap = document.getElementById("tvSandboxWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/tv-sandbox/status");
+        renderTvSandbox(resp["TV沙盒"] || null);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderTvSandbox(data) {{
+      const wrap = document.getElementById("tvSandboxWrap");
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无 TV 沙盒数据</div>';
+        return;
+      }}
+      const envLabel = {{
+        demo: "demo/testnet",
+        live: "live",
+        unknown: "unknown",
+      }}[data.binance_env] || data.binance_env || "-";
+      const summaryHtml = [
+        ["沙盒启用", data.enabled ? "是" : "否"],
+        ["Binance 环境", envLabel],
+        ["拒绝实盘 endpoint", data.reject_live_binance ? "是" : "否"],
+        ["允许 source", (data.allowed_sources || []).join(", ") || "-"],
+        ["signal_id 前缀", data.signal_id_prefix || "-"],
+        ["最大 risk_usdt", data.max_risk_usdt ?? "-"],
+        ["最大 margin_usdt", data.max_margin_usdt ?? "-"],
+        ["允许 entry_type", (data.allowed_entry_types || []).join(", ") || "-"],
+        ["要求 source", data.require_source ? "是" : "否"],
+      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
+      const last = data.last_tv_execution;
+      const lastHtml = last ? `<h3 class="subsection-title">最近 TV 信号</h3>
+        <div class="detail-meta">
+          <div><span>编号</span>${{esc(last.id)}}</div>
+          <div><span>signal_id</span>${{esc(last.signal_id || "-")}}</div>
+          <div><span>交易对</span>${{esc(last.symbol || "-")}}</div>
+          <div><span>状态</span>${{esc(last.status || "-")}}</div>
+          <div><span>跳过原因</span>${{esc(last.skip_reason || "-")}}</div>
+          <div><span>时间</span>${{esc(last.created_at || "-")}}</div>
+        </div>` : '<div class="empty" style="margin-top:0.75rem">暂无 TV 信号执行记录</div>';
+      wrap.innerHTML = `<div class="detail-meta">${{summaryHtml}}</div>${{lastHtml}}`;
+    }}
+
     async function loadRiskConfigSection() {{
       const wrap = document.getElementById("riskConfigWrap");
       try {{
@@ -1847,6 +2014,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       await loadHealthOverviewSection();
       await loadAlertsSection();
       await loadRiskConfigSection();
+      await loadTvSandboxSection();
       await loadRuntimeControlSection();
     }}
 
@@ -2229,5 +2397,25 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "配置体检": inspector})
+
+    @router.get("/api/tv-sandbox/status")
+    async def api_tv_sandbox_status(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            status_payload = build_tv_sandbox_status(settings, journal_store)
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "TV沙盒": {},
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "TV沙盒": status_payload})
 
     return router

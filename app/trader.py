@@ -25,6 +25,7 @@ from .risk import (
 from .storage import AccountRiskStore
 from .runtime_control import RuntimeControl
 from .schemas import TradingViewSignal, normalize_side, opposite_side
+from .tv_sandbox import build_tv_skip_result, is_tv_signal, validate_tv_policy
 
 logger = logging.getLogger(__name__)
 
@@ -1321,7 +1322,12 @@ class Trader:
         if sl_failed or tp_failed:
             self._handle_emergency_close_on_protection_fail(effective_plan, responses, protection_summary)
 
-    def execute(self, signal: TradingViewSignal, signal_key: str) -> dict:
+    def execute(
+        self,
+        signal: TradingViewSignal,
+        signal_key: str,
+        raw_payload: dict | None = None,
+    ) -> dict:
         if self.runtime_control is not None:
             blocked, runtime_summary = self.runtime_control.is_execution_blocked()
             if blocked:
@@ -1336,6 +1342,18 @@ class Trader:
                     "skip_reason": "runtime_locked",
                     "runtime_summary": runtime_summary,
                 }
+
+        payload = raw_payload or {}
+        if self.settings.tv_signal_sandbox_enabled and is_tv_signal(payload, self.settings):
+            rejection = validate_tv_policy(payload, signal, self.settings)
+            if rejection:
+                logger.warning(
+                    "TV sandbox rejected signal: signal_key=%s skip_reason=%s message=%s",
+                    signal_key,
+                    rejection.skip_reason,
+                    rejection.message,
+                )
+                return build_tv_skip_result(rejection)
 
         plan = self.prepare_plan(signal)
         logger.info("Trade plan: %s", json.dumps(asdict(plan), default=str, ensure_ascii=False))

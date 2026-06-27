@@ -32,6 +32,7 @@ class TradingViewSignal(BaseModel):
     """
 
     secret: str
+    source: str | None = Field(default=None, description="Signal source, e.g. tradingview or tv_sandbox")
     signal_id: str | None = Field(default=None, description="Optional idempotency key from TradingView/Pine")
     symbol: str
     side: Side

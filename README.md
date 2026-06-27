@@ -460,6 +460,7 @@ GET /dashboard/api/runtime-control/events?limit=10
 GET /dashboard/api/health-overview
 GET /dashboard/api/alerts?limit=20
 GET /dashboard/api/risk-config
+GET /dashboard/api/tv-sandbox/status
 ```
 
 - 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
@@ -608,6 +609,10 @@ GET /dashboard/api/risk-config
 | `order_entry_policy` | 市价/限价入场策略 |
 | `protection_policy` | 保护单失败策略与持仓策略 |
 | `account_risk_guard` | 账户级风控开关与参数 |
+| `tv_signal_sandbox` | TV Signal Sandbox 是否启用 |
+| `tv_signal_live_guard` | demo/testnet vs 实盘保护 |
+| `tv_signal_risk_limit` | TV 信号 risk 上限 |
+| `tv_signal_source_policy` | source / signal_id 前缀策略 |
 | `dashboard_readonly_guarantee` | Dashboard 只读保证 |
 
 ### 风险等级
@@ -617,4 +622,60 @@ GET /dashboard/api/risk-config
 - 否则 **OK**
 
 页面新增 **「风控配置体检」** 区块：总体等级、环境摘要、风控提示表格。接口失败时仅影响该区块，不影响整页。
+
+## TradingView Signal Sandbox / TV 信号沙盒（v5.9）
+
+用于**安全接入真实 TradingView Alert**，但只允许在 **Binance demo-fapi / testnet** 模拟环境下演练。
+
+**不会**修改配置、自动修复、展示 secret/token/API key 明文；Dashboard 仍然只读。
+
+### 配置项（见 `.env.example`）
+
+| 变量 | 说明 |
+|------|------|
+| `TV_SIGNAL_SANDBOX_ENABLED` | 启用 TV 沙盒校验 |
+| `TV_SIGNAL_REQUIRE_SOURCE` | 要求 JSON 包含 `source` |
+| `TV_SIGNAL_ALLOWED_SOURCES` | 允许的 source |
+| `TV_SIGNAL_ID_PREFIX` | `signal_id` 前缀，默认 `TV-` |
+| `TV_SIGNAL_MAX_RISK_USDT` | TV 信号 `risk_usdt` 上限 |
+| `TV_SIGNAL_MAX_MARGIN_USDT` | TV 信号 `margin_usdt` 上限 |
+| `TV_SIGNAL_ALLOWED_ENTRY_TYPES` | 允许的 `entry_type` |
+| `TV_SIGNAL_REJECT_LIVE_BINANCE` | 非 demo/testnet 时拒绝 TV 信号 |
+
+### TV 信号识别
+
+- `source` 在 `TV_SIGNAL_ALLOWED_SOURCES` 中，或
+- `signal_id` 以 `TV_SIGNAL_ID_PREFIX` 开头
+
+非 TV 本地测试信号不受影响。
+
+### 沙盒校验顺序
+
+1. Runtime Lock（优先）
+2. 必填字段
+3. source 策略
+4. signal_id 前缀
+5. Binance 环境（实盘 endpoint 拒绝）
+6. risk_usdt / margin_usdt 上限
+7. entry_type 允许列表
+
+失败时写 journal（`tv_sandbox_rejected`），不下单、不查余额。
+
+### Dashboard API
+
+```text
+GET /dashboard/api/tv-sandbox/status
+```
+
+### 示例与测试
+
+见 `examples/tradingview_alert_v5_tv_sandbox.json`。
+
+```bash
+curl -X POST http://127.0.0.1:8000/tradingview \
+  -H "Content-Type: application/json" \
+  -d @examples/tradingview_alert_v5_tv_sandbox.json
+```
+
+接入前请确认：demo/testnet endpoint、沙盒启用、Runtime Control 可用、Dashboard 风控体检无 ERROR。
 

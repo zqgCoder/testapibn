@@ -28,6 +28,7 @@ from app.runtime_control import (
     verify_runtime_read_token,
 )
 from app.trader import Trader
+from app.tv_sandbox import is_tv_signal, validate_tv_payload
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
 settings = get_settings()
@@ -55,7 +56,7 @@ runtime_control = RuntimeControl(settings, runtime_store)
 trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
 store = SignalStore(settings.sqlite_path)
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 
@@ -83,6 +84,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+def make_signal_key_from_raw(raw_payload: dict) -> str:
+    signal_id = str(raw_payload.get("signal_id") or "").strip()
+    if signal_id:
+        return signal_id
+    normalized = json.dumps(raw_payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def make_signal_key(signal: TradingViewSignal, raw_payload: dict) -> str:
     """
     Prefer signal_id when supplied by TradingView/Pine.
@@ -97,7 +106,7 @@ def make_signal_key(signal: TradingViewSignal, raw_payload: dict) -> str:
 def execute_background(signal: TradingViewSignal, signal_key: str, raw_payload: dict) -> None:
     result: dict | None = None
     try:
-        result = trader.execute(signal, signal_key)
+        result = trader.execute(signal, signal_key, raw_payload)
         trade_journal.persist_execution(signal, signal_key, raw_payload, result)
         store.mark_done(signal_key)
     except Exception as exc:
@@ -228,9 +237,53 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
     except Exception:
         raise HTTPException(status_code=400, detail="请求体必须是合法 JSON")
 
+    if not isinstance(raw_payload, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+
+    if settings.tv_signal_sandbox_enabled and is_tv_signal(raw_payload, settings):
+        payload_rejection = validate_tv_payload(raw_payload, settings)
+        if payload_rejection is not None:
+            signal_key = make_signal_key_from_raw(raw_payload)
+            if not store.exists(signal_key):
+                side = str(raw_payload.get("side") or "")
+                store.mark_received(
+                    signal_key,
+                    str(raw_payload.get("symbol") or ""),
+                    side,
+                    json.dumps(raw_payload, default=str, ensure_ascii=False),
+                )
+                trade_journal.persist_tv_sandbox_rejection(
+                    signal_key, raw_payload, payload_rejection
+                )
+                store.mark_failed(signal_key, payload_rejection.skip_reason)
+            content = {
+                "成功": False,
+                "跳过": True,
+                "跳过原因": payload_rejection.skip_reason,
+                "提示": payload_rejection.message,
+                "信号编号": signal_key,
+            }
+            if payload_rejection.invalid_fields:
+                content["错误字段"] = payload_rejection.invalid_fields
+            return JSONResponse(status_code=200, content=content)
+
     try:
         signal = TradingViewSignal.model_validate(raw_payload)
     except Exception as exc:
+        if settings.tv_signal_sandbox_enabled and is_tv_signal(raw_payload, settings):
+            payload_rejection = validate_tv_payload(raw_payload, settings)
+            if payload_rejection is not None:
+                signal_key = make_signal_key_from_raw(raw_payload)
+                content = {
+                    "成功": False,
+                    "跳过": True,
+                    "跳过原因": payload_rejection.skip_reason,
+                    "提示": payload_rejection.message,
+                    "信号编号": signal_key,
+                }
+                if payload_rejection.invalid_fields:
+                    content["错误字段"] = payload_rejection.invalid_fields
+                return JSONResponse(status_code=200, content=content)
         raise HTTPException(status_code=422, detail=str(exc))
 
     if signal.secret != settings.webhook_secret:
