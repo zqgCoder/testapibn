@@ -15,8 +15,10 @@ from app.binance_client import BinanceClient
 from app.config import get_settings
 from app.exchange_rules import ExchangeRules
 from app.schemas import TradingViewSignal, normalize_side
-from app.storage import AccountRiskStore, SignalStore
+from app.storage import AccountRiskStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
+from app.journal import TradeJournal
+from app.stats import TradeStatsService
 from app.trader import Trader
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
@@ -37,6 +39,9 @@ client = BinanceClient(settings)
 rules = ExchangeRules(client)
 account_risk_store = AccountRiskStore(settings.sqlite_path)
 account_risk = AccountRiskGuard(settings, client, account_risk_store)
+journal_store = TradeJournalStore(settings.sqlite_path)
+trade_journal = TradeJournal(journal_store)
+trade_stats = TradeStatsService(journal_store)
 trader = Trader(settings, client, rules, account_risk=account_risk)
 store = SignalStore(settings.sqlite_path)
 
@@ -71,12 +76,15 @@ def make_signal_key(signal: TradingViewSignal, raw_payload: dict) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def execute_background(signal: TradingViewSignal, signal_key: str) -> None:
+def execute_background(signal: TradingViewSignal, signal_key: str, raw_payload: dict) -> None:
+    result: dict | None = None
     try:
-        trader.execute(signal, signal_key)
+        result = trader.execute(signal, signal_key)
+        trade_journal.persist_execution(signal, signal_key, raw_payload, result)
         store.mark_done(signal_key)
     except Exception as exc:
         logger.exception("Signal execution failed: key=%s error=%s", signal_key, exc)
+        trade_journal.persist_failure(signal, signal_key, raw_payload, exc, result)
         store.mark_failed(signal_key, str(exc))
 
 
@@ -223,7 +231,7 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
         )
 
     store.mark_received(signal_key, signal.symbol, side, json.dumps(raw_payload, default=str, ensure_ascii=False))
-    background_tasks.add_task(execute_background, signal, signal_key)
+    background_tasks.add_task(execute_background, signal, signal_key, raw_payload)
 
     return {
         "成功": True,
@@ -246,5 +254,79 @@ async def plan_only(signal: TradingViewSignal):
             "成功": True,
             "交易计划": trade_plan_to_chinese(plan),
             "原始字段": trade_plan_raw(plan),
+        }
+    )
+
+
+@app.get("/journal/executions")
+async def journal_executions(limit: int = 50, symbol: str | None = None, status: str | None = None):
+    rows = journal_store.list_executions(limit=limit, symbol=symbol, status=status)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "数量": len(rows),
+            "记录": [TradeStatsService.execution_brief(row) for row in rows],
+        }
+    )
+
+
+@app.get("/journal/executions/{execution_id}")
+async def journal_execution_detail(execution_id: int):
+    row = journal_store.get_execution(execution_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"执行记录不存在: {execution_id}")
+    return JSONResponse(
+        content={
+            "成功": True,
+            "记录": TradeStatsService.execution_detail(row),
+        }
+    )
+
+
+@app.get("/journal/orders/{execution_id}")
+async def journal_orders(execution_id: int):
+    if journal_store.get_execution(execution_id) is None:
+        raise HTTPException(status_code=404, detail=f"执行记录不存在: {execution_id}")
+    rows = journal_store.list_orders(execution_id)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "执行编号": execution_id,
+            "订单数量": len(rows),
+            "订单": [TradeStatsService.order_brief(row) for row in rows],
+        }
+    )
+
+
+@app.get("/stats/summary")
+async def stats_summary():
+    return JSONResponse(
+        content={
+            "成功": True,
+            "统计": trade_stats.summary(),
+        }
+    )
+
+
+@app.get("/stats/by-symbol")
+async def stats_by_symbol():
+    rows = trade_stats.by_symbol()
+    return JSONResponse(
+        content={
+            "成功": True,
+            "数量": len(rows),
+            "按交易对": rows,
+        }
+    )
+
+
+@app.get("/stats/rejections")
+async def stats_rejections(limit: int = 20):
+    rows = trade_stats.rejections(limit=limit)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "数量": len(rows),
+            "拒绝统计": rows,
         }
     )

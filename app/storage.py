@@ -144,3 +144,295 @@ class AccountRiskStore:
             return datetime.fromisoformat(str(row[0]))
         except ValueError:
             return None
+
+
+class TradeJournalStore:
+    EXECUTION_COLUMNS = (
+        "signal_key",
+        "signal_id",
+        "symbol",
+        "side",
+        "entry_type",
+        "risk_mode",
+        "position_policy",
+        "status",
+        "skip_reason",
+        "error_message",
+        "planned_qty",
+        "filled_qty",
+        "entry_price",
+        "stop_loss_price",
+        "target_risk_usdt",
+        "estimated_total_loss_at_sl",
+        "leverage",
+        "account_risk_allowed",
+        "account_risk_skip_reason",
+        "raw_signal_json",
+        "plan_json",
+        "account_risk_json",
+        "entry_summary_json",
+        "protection_summary_json",
+        "result_json",
+        "created_at",
+        "updated_at",
+    )
+
+    ORDER_COLUMNS = (
+        "execution_id",
+        "signal_key",
+        "symbol",
+        "role",
+        "order_id",
+        "algo_id",
+        "client_order_id",
+        "side",
+        "order_type",
+        "status",
+        "price",
+        "avg_price",
+        "quantity",
+        "executed_qty",
+        "trigger_price",
+        "reduce_only",
+        "close_position",
+        "raw_order_json",
+        "created_at",
+    )
+
+    def __init__(self, db_path: str):
+        self.db_path = Path(db_path)
+        self.lock = threading.Lock()
+        self._init_db()
+
+    def _connect(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_key TEXT NOT NULL UNIQUE,
+                    signal_id TEXT,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_type TEXT,
+                    risk_mode TEXT,
+                    position_policy TEXT,
+                    status TEXT NOT NULL,
+                    skip_reason TEXT,
+                    error_message TEXT,
+                    planned_qty TEXT,
+                    filled_qty TEXT,
+                    entry_price TEXT,
+                    stop_loss_price TEXT,
+                    target_risk_usdt TEXT,
+                    estimated_total_loss_at_sl TEXT,
+                    leverage INTEGER,
+                    account_risk_allowed INTEGER,
+                    account_risk_skip_reason TEXT,
+                    raw_signal_json TEXT,
+                    plan_json TEXT,
+                    account_risk_json TEXT,
+                    entry_summary_json TEXT,
+                    protection_summary_json TEXT,
+                    result_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    execution_id INTEGER NOT NULL,
+                    signal_key TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    order_id TEXT,
+                    algo_id TEXT,
+                    client_order_id TEXT,
+                    side TEXT,
+                    order_type TEXT,
+                    status TEXT,
+                    price TEXT,
+                    avg_price TEXT,
+                    quantity TEXT,
+                    executed_qty TEXT,
+                    trigger_price TEXT,
+                    reduce_only INTEGER,
+                    close_position INTEGER,
+                    raw_order_json TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_symbol_time ON trade_executions(symbol, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_exec_status_time ON trade_executions(status, created_at)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_exec_created ON trade_executions(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_execution ON trade_orders(execution_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_signal ON trade_orders(signal_key)")
+            conn.commit()
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        return {key: row[key] for key in row.keys()}
+
+    def insert_execution(self, data: dict) -> int:
+        now = self._now()
+        values = {col: data.get(col) for col in self.EXECUTION_COLUMNS}
+        values["created_at"] = now
+        values["updated_at"] = now
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.lock, self._connect() as conn:
+            cur = conn.execute(
+                f"INSERT INTO trade_executions ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def insert_order(self, data: dict) -> int:
+        now = self._now()
+        values = {col: data.get(col) for col in self.ORDER_COLUMNS}
+        values["created_at"] = now
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.lock, self._connect() as conn:
+            cur = conn.execute(
+                f"INSERT INTO trade_orders ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def list_executions(
+        self,
+        *,
+        limit: int = 50,
+        symbol: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 500)))
+        sql = f"SELECT * FROM trade_executions {where} ORDER BY id DESC LIMIT ?"
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
+    def get_execution(self, execution_id: int) -> dict | None:
+        with self.lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM trade_executions WHERE id = ?", (execution_id,)).fetchone()
+        return self._row_to_dict(row)
+
+    def list_orders(self, execution_id: int) -> list[dict]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trade_orders WHERE execution_id = ? ORDER BY id ASC",
+                (execution_id,),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
+    def count_by_status(self) -> dict[str, int]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS cnt FROM trade_executions GROUP BY status"
+            ).fetchall()
+        return {str(row["status"]): int(row["cnt"]) for row in rows}
+
+    def count_by_status_since(self, since_iso: str) -> dict[str, int]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS cnt
+                FROM trade_executions
+                WHERE created_at >= ?
+                GROUP BY status
+                """,
+                (since_iso,),
+            ).fetchall()
+        return {str(row["status"]): int(row["cnt"]) for row in rows}
+
+    def stats_by_symbol(self) -> list[dict]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    symbol,
+                    COUNT(*) AS total_executions,
+                    SUM(CASE WHEN status = 'protected' THEN 1 ELSE 0 END) AS protected_count,
+                    SUM(CASE WHEN status = 'entry_not_filled' THEN 1 ELSE 0 END) AS entry_not_filled_count,
+                    SUM(CASE WHEN status = 'blocked_by_account_risk' THEN 1 ELSE 0 END) AS blocked_count,
+                    SUM(CASE WHEN status = 'protection_failed' THEN 1 ELSE 0 END) AS protection_failed_count
+                FROM trade_executions
+                GROUP BY symbol
+                ORDER BY total_executions DESC, symbol ASC
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "symbol": row["symbol"],
+                    "total_executions": int(row["total_executions"]),
+                    "protected_count": int(row["protected_count"] or 0),
+                    "entry_not_filled_count": int(row["entry_not_filled_count"] or 0),
+                    "blocked_count": int(row["blocked_count"] or 0),
+                    "protection_failed_count": int(row["protection_failed_count"] or 0),
+                }
+            )
+        return result
+
+    def stats_rejections(self, limit: int = 20) -> list[dict]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(skip_reason, status) AS reason,
+                    status,
+                    COUNT(*) AS count
+                FROM trade_executions
+                WHERE status IN (
+                    'blocked_by_account_risk',
+                    'skipped_by_position_policy',
+                    'entry_not_filled',
+                    'protection_failed',
+                    'failed'
+                )
+                GROUP BY COALESCE(skip_reason, status), status
+                ORDER BY count DESC, reason ASC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        return [
+            {
+                "reason": row["reason"],
+                "status": row["status"],
+                "count": int(row["count"]),
+            }
+            for row in rows
+        ]
