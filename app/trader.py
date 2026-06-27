@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 
+from .account_risk import AccountRiskGuard
 from .binance_client import BinanceAPIError, BinanceClient
 from .config import Settings
 from .exchange_rules import ExchangeRules, SymbolRules, floor_to_step, normalize_market_quantity
@@ -21,6 +22,7 @@ from .risk import (
     estimate_used_risk_at_entry,
     validate_price_levels,
 )
+from .storage import AccountRiskStore
 from .schemas import TradingViewSignal, normalize_side, opposite_side
 
 logger = logging.getLogger(__name__)
@@ -39,10 +41,22 @@ class FallbackRecalcResult:
 
 
 class Trader:
-    def __init__(self, settings: Settings, client: BinanceClient, rules: ExchangeRules):
+    def __init__(
+        self,
+        settings: Settings,
+        client: BinanceClient,
+        rules: ExchangeRules,
+        account_risk: AccountRiskGuard | None = None,
+        account_risk_store: AccountRiskStore | None = None,
+    ):
         self.settings = settings
         self.client = client
         self.rules = rules
+        if account_risk is not None:
+            self.account_risk = account_risk
+        else:
+            store = account_risk_store or AccountRiskStore(settings.sqlite_path)
+            self.account_risk = AccountRiskGuard(settings, client, store)
 
     def _check_symbol_allowed(self, symbol: str) -> None:
         allowed = self.settings.allowed_symbol_set
@@ -1312,7 +1326,27 @@ class Trader:
             logger.warning("DRY_RUN active. No Binance orders submitted. Set ENABLE_TRADING=true to trade.")
             return {"dry_run": True, "plan": asdict(plan)}
 
-        responses: dict = {"plan": asdict(plan), "orders": {}}
+        account_risk_result = self.account_risk.check_before_entry(plan)
+        if not account_risk_result.allowed:
+            logger.warning(
+                "Account risk blocked entry: symbol=%s skip_reason=%s summary=%s",
+                plan.symbol,
+                account_risk_result.skip_reason,
+                AccountRiskGuard.summary_dict(account_risk_result),
+            )
+            return {
+                "plan": asdict(plan),
+                "orders": {},
+                "skipped": True,
+                "skip_reason": account_risk_result.skip_reason,
+                "account_risk_summary": AccountRiskGuard.summary_dict(account_risk_result),
+            }
+
+        responses: dict = {
+            "plan": asdict(plan),
+            "orders": {},
+            "account_risk_summary": AccountRiskGuard.summary_dict(account_risk_result),
+        }
 
         should_continue = self._handle_existing_position(signal, plan, responses)
         if not should_continue:
@@ -1325,6 +1359,8 @@ class Trader:
         if not entry_filled:
             logger.info("Execution ended without entry fill: %s", json.dumps(responses, default=str, ensure_ascii=False))
             return responses
+
+        self.account_risk.record_successful_open(effective_plan.symbol, effective_plan, signal_key)
 
         # Store updated plan when a limit order partially fills or falls back to market.
         if effective_plan.quantity != plan.quantity or effective_plan.take_profits != plan.take_profits:

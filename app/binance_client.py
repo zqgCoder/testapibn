@@ -249,6 +249,32 @@ class BinanceClient:
                 return Decimal(str(row.get("positionAmt", "0")))
         return Decimal("0")
 
+    def non_zero_positions(self) -> list[dict[str, Any]]:
+        data = self.position_risk()
+        rows = data if isinstance(data, list) else [data]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            amt = Decimal(str(row.get("positionAmt", "0")))
+            if abs(amt) > 0:
+                result.append(row)
+        return result
+
+    def income(
+        self,
+        income_type: str,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> Any:
+        params: dict[str, Any] = {
+            "incomeType": income_type,
+            "startTime": start_time_ms,
+            "limit": limit,
+        }
+        if end_time_ms is not None:
+            params["endTime"] = end_time_ms
+        return self.signed_request("GET", "/fapi/v1/income", params)
+
     def close_position_market(self, symbol: str, position_amt: Decimal, client_order_id: str | None = None) -> Any:
         qty = abs(position_amt)
         if qty <= 0:

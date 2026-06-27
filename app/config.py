@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     # When true, close the open position if stop-loss / take-profit placement fails after entry.
     emergency_close_on_protection_fail: bool = Field(default=False, alias="EMERGENCY_CLOSE_ON_PROTECTION_FAIL")
 
+    # ===== V5 account risk =====
+    account_risk_enabled: bool = Field(default=False, alias="ACCOUNT_RISK_ENABLED")
+    daily_max_loss_usdt: float = Field(default=0, alias="DAILY_MAX_LOSS_USDT")
+    daily_max_trades: int = Field(default=0, alias="DAILY_MAX_TRADES")
+    max_open_positions: int = Field(default=0, alias="MAX_OPEN_POSITIONS")
+    symbol_cooldown_sec: int = Field(default=0, alias="SYMBOL_COOLDOWN_SEC")
+    max_total_risk_usdt: float = Field(default=0, alias="MAX_TOTAL_RISK_USDT")
+    account_risk_no_sl_penalty_pct: float = Field(default=0.02, alias="ACCOUNT_RISK_NO_SL_PENALTY_PCT")
+    account_risk_day_timezone: str = Field(default="UTC", alias="ACCOUNT_RISK_DAY_TIMEZONE")
+
     @property
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}
@@ -98,6 +108,18 @@ class Settings(BaseSettings):
             raise RuntimeError("DEFAULT_TAKER_FEE_RATE must be between 0 and 0.01")
         if self.fee_safety_multiplier < 1:
             raise RuntimeError("FEE_SAFETY_MULTIPLIER must be >= 1")
+        if self.daily_max_loss_usdt < 0:
+            raise RuntimeError("DAILY_MAX_LOSS_USDT must be >= 0")
+        if self.daily_max_trades < 0:
+            raise RuntimeError("DAILY_MAX_TRADES must be >= 0")
+        if self.max_open_positions < 0:
+            raise RuntimeError("MAX_OPEN_POSITIONS must be >= 0")
+        if self.symbol_cooldown_sec < 0:
+            raise RuntimeError("SYMBOL_COOLDOWN_SEC must be >= 0")
+        if self.max_total_risk_usdt < 0:
+            raise RuntimeError("MAX_TOTAL_RISK_USDT must be >= 0")
+        if self.account_risk_no_sl_penalty_pct < 0:
+            raise RuntimeError("ACCOUNT_RISK_NO_SL_PENALTY_PCT must be >= 0")
 
 
 @lru_cache(maxsize=1)

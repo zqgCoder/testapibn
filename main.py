@@ -15,7 +15,8 @@ from app.binance_client import BinanceClient
 from app.config import get_settings
 from app.exchange_rules import ExchangeRules
 from app.schemas import TradingViewSignal, normalize_side
-from app.storage import SignalStore
+from app.storage import AccountRiskStore, SignalStore
+from app.account_risk import AccountRiskGuard
 from app.trader import Trader
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
@@ -34,7 +35,9 @@ logger = logging.getLogger("tv_binance_bot")
 
 client = BinanceClient(settings)
 rules = ExchangeRules(client)
-trader = Trader(settings, client, rules)
+account_risk_store = AccountRiskStore(settings.sqlite_path)
+account_risk = AccountRiskGuard(settings, client, account_risk_store)
+trader = Trader(settings, client, rules, account_risk=account_risk)
 store = SignalStore(settings.sqlite_path)
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version="1.4.0")
