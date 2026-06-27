@@ -55,7 +55,7 @@ runtime_control = RuntimeControl(settings, runtime_store)
 trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
 store = SignalStore(settings.sqlite_path)
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 

@@ -158,6 +158,316 @@ def build_dashboard_health(settings: Settings, client: BinanceClient) -> dict[st
     return payload
 
 
+def _health_level_rank(level: str) -> int:
+    return {"OK": 0, "WARN": 1, "ERROR": 2}.get(level, 0)
+
+
+def _aggregate_health_level(checks: list[dict[str, str]]) -> str:
+    max_rank = 0
+    result = "OK"
+    for check in checks:
+        level = check.get("level", "OK")
+        rank = _health_level_rank(level)
+        if rank > max_rank:
+            max_rank = rank
+            result = level
+    return result
+
+
+def _is_stop_loss_algo_order(row: dict[str, Any]) -> bool:
+    order_type = str(row.get("orderType") or row.get("type") or "").upper()
+    if "TAKE_PROFIT" in order_type:
+        return False
+    if order_type in {"STOP_MARKET", "STOP", "TRAILING_STOP_MARKET"}:
+        return True
+    if "STOP" in order_type and "TAKE_PROFIT" not in order_type:
+        return True
+    close_pos = row.get("closePosition")
+    if str(close_pos).lower() in {"true", "1"} and "TAKE_PROFIT" not in order_type:
+        return True
+    return False
+
+
+def build_health_overview(
+    settings: Settings,
+    client: BinanceClient,
+    journal_store: TradeJournalStore,
+    trade_stats: TradeStatsService,
+    runtime_control: RuntimeControl,
+) -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+    summary: dict[str, Any] = {
+        "enable_trading": settings.enable_trading,
+        "binance_ok": False,
+        "runtime_locked": False,
+        "open_position_count": 0,
+        "algo_order_count": 0,
+        "recent_execution_count": 0,
+        "last_execution_time": None,
+        "last_execution_status": None,
+        "last_rejection_reason": None,
+    }
+
+    checks.append(
+        {
+            "name": "service_health",
+            "level": "OK",
+            "message": "Dashboard 健康检查服务正常",
+        }
+    )
+
+    account_error: str | None = None
+    try:
+        client.futures_balance()
+        summary["binance_ok"] = True
+        checks.append(
+            {
+                "name": "binance_account",
+                "level": "OK",
+                "message": "Binance account 查询正常",
+            }
+        )
+    except Exception as exc:
+        account_error = str(exc)[:500]
+        summary["binance_ok"] = False
+        checks.append(
+            {
+                "name": "binance_account",
+                "level": "ERROR",
+                "message": f"Binance account 查询失败: {account_error}",
+            }
+        )
+
+    if settings.enable_trading:
+        checks.append(
+            {
+                "name": "enable_trading",
+                "level": "WARN",
+                "message": "真实交易已启用，请确认风控与 Runtime Control 配置",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "enable_trading",
+                "level": "WARN",
+                "message": "交易执行已关闭，仅计划/监控",
+            }
+        )
+
+    runtime_state = runtime_control.status_payload()
+    runtime_enabled = bool(runtime_state.get("enabled"))
+    runtime_locked = bool(runtime_state.get("locked"))
+    summary["runtime_locked"] = runtime_locked
+    if not runtime_enabled:
+        checks.append(
+            {
+                "name": "runtime_lock",
+                "level": "WARN",
+                "message": "Runtime Control 未启用",
+            }
+        )
+    elif runtime_locked:
+        reason = runtime_state.get("reason") or "未说明"
+        locked_by = runtime_state.get("locked_by") or "-"
+        locked_until = runtime_state.get("locked_until") or "无"
+        checks.append(
+            {
+                "name": "runtime_lock",
+                "level": "WARN",
+                "message": (
+                    f"Runtime Control 当前处于锁定状态: reason={reason}, "
+                    f"locked_by={locked_by}, locked_until={locked_until}"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "runtime_lock",
+                "level": "OK",
+                "message": "Runtime Control 未锁定",
+            }
+        )
+
+    recent_rows = journal_store.list_executions(limit=50)
+    summary["recent_execution_count"] = len(recent_rows)
+    last_row = recent_rows[0] if recent_rows else None
+    if last_row:
+        summary["last_execution_time"] = last_row.get("created_at")
+        summary["last_execution_status"] = last_row.get("status")
+        summary["last_rejection_reason"] = last_row.get("skip_reason")
+        last_status = str(last_row.get("status") or "")
+        if last_status in {"failed", "protection_failed"}:
+            checks.append(
+                {
+                    "name": "recent_execution",
+                    "level": "ERROR",
+                    "message": f"最近执行状态异常: {last_status}",
+                }
+            )
+        elif last_status in {"blocked_by_account_risk", "blocked_by_runtime_lock"}:
+            skip = last_row.get("skip_reason") or last_status
+            checks.append(
+                {
+                    "name": "recent_execution",
+                    "level": "WARN",
+                    "message": f"最近执行被拒绝: {last_status} ({skip})",
+                }
+            )
+        elif last_status == "protected":
+            checks.append(
+                {
+                    "name": "recent_execution",
+                    "level": "OK",
+                    "message": "最近执行已成功保护",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "recent_execution",
+                    "level": "WARN",
+                    "message": f"最近执行状态: {last_status}",
+                }
+            )
+    else:
+        checks.append(
+            {
+                "name": "recent_execution",
+                "level": "WARN",
+                "message": "暂无执行记录",
+            }
+        )
+
+    positions: list[dict[str, Any]] = []
+    try:
+        positions = build_dashboard_positions(client)
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "open_positions",
+                "level": "WARN",
+                "message": f"持仓查询失败: {str(exc)[:200]}",
+            }
+        )
+    else:
+        summary["open_position_count"] = len(positions)
+        if not positions:
+            checks.append(
+                {
+                    "name": "open_positions",
+                    "level": "OK",
+                    "message": "当前无持仓",
+                }
+            )
+        else:
+            symbols = ", ".join(p.get("symbol", "?") for p in positions)
+            checks.append(
+                {
+                    "name": "open_positions",
+                    "level": "WARN",
+                    "message": f"当前有 {len(positions)} 个持仓: {symbols}",
+                }
+            )
+
+    algo_orders: list[dict[str, Any]] = []
+    try:
+        algo_orders = build_dashboard_algo_orders(settings, client)
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "protection_orders",
+                "level": "WARN",
+                "message": f"条件单查询失败: {str(exc)[:200]}",
+            }
+        )
+    else:
+        summary["algo_order_count"] = len(algo_orders)
+        if not positions:
+            checks.append(
+                {
+                    "name": "protection_orders",
+                    "level": "OK",
+                    "message": "当前无持仓，无需保护单检查",
+                }
+            )
+        else:
+            algo_by_symbol: dict[str, list[dict[str, Any]]] = {}
+            for order in algo_orders:
+                sym = str(order.get("symbol") or "").upper()
+                algo_by_symbol.setdefault(sym, []).append(order)
+            unprotected: list[str] = []
+            for pos in positions:
+                sym = str(pos.get("symbol") or "").upper()
+                sl_orders = [o for o in algo_by_symbol.get(sym, []) if _is_stop_loss_algo_order(o)]
+                if not sl_orders:
+                    unprotected.append(sym)
+            if unprotected:
+                checks.append(
+                    {
+                        "name": "protection_orders",
+                        "level": "ERROR",
+                        "message": f"存在未保护持仓（无止损条件单）: {', '.join(unprotected)}",
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "name": "protection_orders",
+                        "level": "OK",
+                        "message": "所有持仓均检测到止损类条件单",
+                    }
+                )
+
+    api_issues: list[str] = []
+    if not settings.dashboard_require_token:
+        api_issues.append("DASHBOARD_REQUIRE_TOKEN=false")
+    if not settings.protect_journal_api:
+        api_issues.append("PROTECT_JOURNAL_API=false")
+    if not settings.protect_stats_api:
+        api_issues.append("PROTECT_STATS_API=false")
+    if not api_issues:
+        checks.append(
+            {
+                "name": "api_protection",
+                "level": "OK",
+                "message": "Dashboard / Journal / Stats API Token 保护均已启用",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "api_protection",
+                "level": "WARN",
+                "message": f"部分 API 未启用 Token 保护: {', '.join(api_issues)}",
+            }
+        )
+
+    if settings.runtime_status_allow_dashboard_token:
+        checks.append(
+            {
+                "name": "runtime_status_permission",
+                "level": "OK",
+                "message": "Dashboard 可读取 Runtime Control 状态",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "runtime_status_permission",
+                "level": "WARN",
+                "message": "RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN=false，Dashboard 运行控制状态可能不可读",
+            }
+        )
+
+    return {
+        "level": _aggregate_health_level(checks),
+        "checks": checks,
+        "summary": summary,
+    }
+
+
 def _check_dashboard_access(
     settings: Settings,
     *,
@@ -296,6 +606,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     .lock-badge {{ display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; }}
     .lock-badge.locked {{ color: var(--warn); border: 1px solid #78350f; }}
     .lock-badge.unlocked {{ color: var(--ok); border: 1px solid #14532d; }}
+    .health-level {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; }}
+    .health-level.ok {{ color: var(--ok); }}
+    .health-level.warn {{ color: var(--warn); }}
+    .health-level.error {{ color: var(--bad); }}
+    .check-level {{ display: inline-block; min-width: 3.2rem; font-size: 0.72rem; font-weight: 600; }}
+    .check-level.ok {{ color: var(--ok); }}
+    .check-level.warn {{ color: var(--warn); }}
+    .check-level.error {{ color: var(--bad); }}
   </style>
 </head>
 <body>
@@ -320,6 +638,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <div class="card"><div class="label">今日执行</div><div class="value" data-k="today_executions">-</div></div>
       <div class="card"><div class="label">今日保护成功</div><div class="value" data-k="today_protected">-</div></div>
     </div>
+
+    <section>
+      <h2>系统健康摘要</h2>
+      <p class="section-note">只读监控 · 不会自动下单、平仓、撤单或解锁</p>
+      <div id="healthOverviewWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
 
     <section>
       <h2>运行控制</h2>
@@ -698,6 +1024,51 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </table>`;
     }}
 
+    async function loadHealthOverviewSection() {{
+      const wrap = document.getElementById("healthOverviewWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/health-overview");
+        renderHealthOverview(resp["健康摘要"] || null);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderHealthOverview(data) {{
+      const wrap = document.getElementById("healthOverviewWrap");
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无健康摘要数据</div>';
+        return;
+      }}
+      const level = (data.level || "OK").toLowerCase();
+      const summary = data.summary || {{}};
+      const checks = data.checks || [];
+      const summaryHtml = [
+        ["允许真实下单", summary.enable_trading ? "是" : "否"],
+        ["Binance 状态", summary.binance_ok ? "正常" : "异常"],
+        ["Runtime 锁定", summary.runtime_locked ? "是" : "否"],
+        ["当前持仓数", summary.open_position_count ?? "-"],
+        ["条件单数", summary.algo_order_count ?? "-"],
+        ["最近执行数", summary.recent_execution_count ?? "-"],
+        ["最近执行状态", summary.last_execution_status || "-"],
+        ["最近拒绝原因", summary.last_rejection_reason || "-"],
+      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
+      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
+        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
+        <tbody>${{checks.map((c) => `<tr>
+          <td class="mono">${{esc(c.name)}}</td>
+          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
+          <td>${{esc(c.message)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>` : '<div class="empty">无检查项</div>';
+      wrap.innerHTML = `
+        <div class="health-level ${{level}}">总体等级: ${{esc(data.level || "OK")}}</div>
+        <div class="detail-meta">${{summaryHtml}}</div>
+        <h3 class="subsection-title">风险提示</h3>
+        ${{checksHtml}}
+      `;
+    }}
+
     async function loadRuntimeControlSection() {{
       const statusEl = document.getElementById("runtimeControlStatus");
       try {{
@@ -746,6 +1117,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       }} catch (err) {{
         showError(err.message || String(err));
       }}
+      await loadHealthOverviewSection();
       await loadRuntimeControlSection();
     }}
 
@@ -1030,5 +1402,37 @@ def create_dashboard_router(
         )
         rows = runtime_control.list_events(limit=limit)
         return JSONResponse(content={"成功": True, "数量": len(rows), "事件": rows})
+
+    @router.get("/api/health-overview")
+    async def api_health_overview(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            overview = build_health_overview(
+                settings, client, journal_store, trade_stats, runtime_control
+            )
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "健康摘要": {
+                        "level": "ERROR",
+                        "checks": [
+                            {
+                                "name": "health_overview",
+                                "level": "ERROR",
+                                "message": f"健康摘要生成失败: {str(exc)[:200]}",
+                            }
+                        ],
+                        "summary": {},
+                    },
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "健康摘要": overview})
 
     return router

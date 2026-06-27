@@ -358,6 +358,7 @@ GET /dashboard/api/positions
 GET /dashboard/api/algo-orders
 GET /dashboard/api/runtime-control/status
 GET /dashboard/api/runtime-control/events?limit=10
+GET /dashboard/api/health-overview
 ```
 
 Token 可通过请求头 `X-Dashboard-Token` 或 query 参数 `?token=` 传递。
@@ -455,6 +456,7 @@ Dashboard 页面**只读**展示运行锁定状态与最近事件，**不提供*
 ```text
 GET /dashboard/api/runtime-control/status
 GET /dashboard/api/runtime-control/events?limit=10
+GET /dashboard/api/health-overview
 ```
 
 - 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
@@ -473,4 +475,42 @@ POST /runtime/unlock
 ```
 
 Dashboard Token 只能读取状态，不能执行写操作。
+
+## Health Overview / 系统健康摘要（v5.6）
+
+Dashboard **只读**展示系统运行健康状态与关键风险提示。不会自动下单、平仓、撤单、解锁或修复任何问题。
+
+### Dashboard API
+
+```text
+GET /dashboard/api/health-overview
+```
+
+仅支持 **Dashboard Token** 鉴权，不返回任何 secret/token。
+
+### 健康等级
+
+| 等级 | 含义 |
+|------|------|
+| **OK** | 当前检查项无严重问题 |
+| **WARN** | 存在需关注的风险或配置提醒 |
+| **ERROR** | 存在需要尽快处理的问题 |
+
+典型 **ERROR** 场景：
+- Binance 账户查询失败
+- 最近 journal 执行状态为 `failed` / `protection_failed`
+- **有持仓但无止损（STOP/STOP_MARKET）条件单** — 标记为「存在未保护持仓」
+
+典型 **WARN** 场景：
+- `ENABLE_TRADING=false`（仅监控）
+- `ENABLE_TRADING=true`（真实交易已启用）
+- Runtime Control 已锁定或未启用
+- 当前有持仓
+- Journal/Stats API 未启用 Token 保护
+
+### 检查项
+
+`service_health`、`binance_account`、`enable_trading`、`runtime_lock`、`recent_execution`、`open_positions`、`protection_orders`、`api_protection`、`runtime_status_permission`
+
+页面新增 **「系统健康摘要」** 区块：总体等级、关键指标、风险提示列表。接口失败时仅该区块显示错误，不影响整页。
 
