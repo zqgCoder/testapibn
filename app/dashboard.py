@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .stats import TradeStatsService
 from .storage import TradeJournalStore
+from .tv_observation import alerts_from_tv_observation, build_tv_alert_readiness, build_tv_observation
 from .tv_sandbox import binance_env_label, is_tv_execution_row
 
 if TYPE_CHECKING:
@@ -630,6 +631,14 @@ def build_alerts(
         if alert:
             alerts.append(alert)
 
+    try:
+        observation = build_tv_observation(
+            settings, journal_store, client, runtime_control
+        )
+        alerts.extend(alerts_from_tv_observation(observation, created_at=now_iso))
+    except Exception:
+        pass
+
     runtime_events = runtime_control.list_events(limit=cap)
     for event in runtime_events:
         alert = _alert_from_runtime_event(event)
@@ -1158,6 +1167,58 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
             }
         )
 
+    if settings.tv_alert_observation_enabled:
+        checks.append(
+            {
+                "name": "tv_alert_observation",
+                "level": "OK",
+                "message": "TV Alert 连续观察已启用",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "tv_alert_observation",
+                "level": "WARN",
+                "message": "TV_ALERT_OBSERVATION_ENABLED=false",
+            }
+        )
+
+    public_url = (settings.tv_alert_public_base_url or "").strip()
+    if public_url.startswith("http://") or public_url.startswith("https://"):
+        checks.append(
+            {
+                "name": "tv_alert_public_url",
+                "level": "OK",
+                "message": f"TV_ALERT_PUBLIC_BASE_URL 已配置，Webhook: {public_url.rstrip('/')}/tradingview",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "tv_alert_public_url",
+                "level": "WARN",
+                "message": "TV_ALERT_PUBLIC_BASE_URL 未配置，TradingView 无法公网回调",
+            }
+        )
+
+    stale_level = "OK"
+    stale_msg = f"TV_ALERT_STALE_MINUTES={settings.tv_alert_stale_minutes}"
+    if settings.tv_alert_stale_minutes > 360:
+        stale_level = "WARN"
+        stale_msg += " 偏长，可能延迟发现信号中断"
+    checks.append({"name": "tv_alert_stale_policy", "level": stale_level, "message": stale_msg})
+
+    fail_level = "OK"
+    fail_msg = (
+        f"连续失败 WARN>={settings.tv_alert_consecutive_failure_warn}, "
+        f"ERROR>={settings.tv_alert_consecutive_failure_error}"
+    )
+    if settings.tv_alert_consecutive_failure_warn >= settings.tv_alert_consecutive_failure_error:
+        fail_level = "ERROR"
+        fail_msg += " 阈值配置无效"
+    checks.append({"name": "tv_alert_failure_policy", "level": fail_level, "message": fail_msg})
+
     checks.append(
         {
             "name": "dashboard_readonly_guarantee",
@@ -1191,6 +1252,9 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         "tv_signal_sandbox_enabled": settings.tv_signal_sandbox_enabled,
         "tv_signal_max_risk_usdt": settings.tv_signal_max_risk_usdt,
         "tv_signal_id_prefix": settings.tv_signal_id_prefix,
+        "tv_alert_observation_enabled": settings.tv_alert_observation_enabled,
+        "tv_alert_stale_minutes": settings.tv_alert_stale_minutes,
+        "tv_alert_observation_window_hours": settings.tv_alert_observation_window_hours,
     }
 
     return {
@@ -1399,6 +1463,22 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <h2>TradingView 沙盒</h2>
       <p class="section-note">只读展示 · 仅允许 demo/testnet 接入演练</p>
       <div id="tvSandboxWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>TradingView 接入准备</h2>
+      <p class="section-note">只读检查 · demo/testnet 接入前清单</p>
+      <div id="tvAlertReadinessWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>TradingView 连续观察</h2>
+      <p class="section-note">只读统计 · 最近窗口内 TV 信号运行状态</p>
+      <div id="tvObservationWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
@@ -1825,6 +1905,90 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       wrap.innerHTML = `<div class="detail-meta">${{summaryHtml}}</div>${{lastHtml}}`;
     }}
 
+    async function loadTvAlertReadinessSection() {{
+      const wrap = document.getElementById("tvAlertReadinessWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/tv-alert-readiness");
+        renderTvCheckBlock(wrap, resp["TV接入检查"] || null, "接入准备");
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    async function loadTvObservationSection() {{
+      const wrap = document.getElementById("tvObservationWrap");
+      try {{
+        const hours = 24;
+        const resp = await apiFetch("/dashboard/api/tv-observation?hours=" + hours);
+        renderTvObservation(wrap, resp["TV观察"] || null);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderTvCheckBlock(wrap, data, titlePrefix) {{
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无数据</div>';
+        return;
+      }}
+      const level = (data.level || "OK").toLowerCase();
+      const summary = data.summary || {{}};
+      const checks = data.checks || [];
+      const summaryKeys = Object.keys(summary);
+      const summaryHtml = summaryKeys.map((k) =>
+        `<div><span>${{esc(k)}}</span>${{esc(summary[k])}}</div>`
+      ).join("");
+      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
+        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
+        <tbody>${{checks.map((c) => `<tr>
+          <td class="mono">${{esc(c.name)}}</td>
+          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
+          <td>${{esc(c.message)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>` : "";
+      wrap.innerHTML = `
+        <div class="health-level ${{level}}">${{esc(titlePrefix)}} 等级: ${{esc(data.level || "OK")}}</div>
+        <div class="detail-meta">${{summaryHtml}}</div>
+        ${{checksHtml}}
+      `;
+    }}
+
+    function renderTvObservation(wrap, data) {{
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无观察数据</div>';
+        return;
+      }}
+      const level = (data.level || "OK").toLowerCase();
+      const summary = data.summary || {{}};
+      const checks = data.checks || [];
+      const statHtml = [
+        ["观察窗口(小时)", data.window_hours ?? "-"],
+        ["TV 信号总数", summary.total_tv_signals ?? 0],
+        ["protected", summary.protected_count ?? 0],
+        ["failed", summary.failed_count ?? 0],
+        ["tv_sandbox_rejected", summary.tv_sandbox_rejected_count ?? 0],
+        ["runtime_lock", summary.blocked_by_runtime_lock_count ?? 0],
+        ["连续失败", summary.consecutive_failures ?? 0],
+        ["最近 TV 信号时间", summary.last_tv_signal_time || "-"],
+        ["最近 TV 状态", summary.last_tv_signal_status || "-"],
+        ["持仓数", summary.open_position_count ?? 0],
+        ["未保护持仓", summary.unprotected_position_count ?? 0],
+      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
+      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
+        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
+        <tbody>${{checks.map((c) => `<tr>
+          <td class="mono">${{esc(c.name)}}</td>
+          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
+          <td>${{esc(c.message)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>` : "";
+      wrap.innerHTML = `
+        <div class="health-level ${{level}}">观察等级: ${{esc(data.level || "OK")}}</div>
+        <div class="detail-meta">${{statHtml}}</div>
+        ${{checksHtml}}
+      `;
+    }}
+
     async function loadRiskConfigSection() {{
       const wrap = document.getElementById("riskConfigWrap");
       try {{
@@ -2015,6 +2179,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       await loadAlertsSection();
       await loadRiskConfigSection();
       await loadTvSandboxSection();
+      await loadTvAlertReadinessSection();
+      await loadTvObservationSection();
       await loadRuntimeControlSection();
     }}
 
@@ -2417,5 +2583,57 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "TV沙盒": status_payload})
+
+    @router.get("/api/tv-alert-readiness")
+    async def api_tv_alert_readiness(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            readiness = build_tv_alert_readiness(settings, app_version)
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "TV接入检查": {"level": "ERROR", "checks": [], "summary": {}},
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "TV接入检查": readiness})
+
+    @router.get("/api/tv-observation")
+    async def api_tv_observation(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+        hours: int = Query(default=24, ge=1, le=168),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            observation = build_tv_observation(
+                settings,
+                journal_store,
+                client,
+                runtime_control,
+                hours=hours,
+            )
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "TV观察": {
+                        "level": "ERROR",
+                        "window_hours": hours,
+                        "summary": {},
+                        "checks": [],
+                    },
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "TV观察": observation})
 
     return router

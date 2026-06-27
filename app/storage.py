@@ -343,6 +343,20 @@ class TradeJournalStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
 
+    def list_executions_since(self, since_iso: str, *, limit: int = 500) -> list[dict]:
+        cap = max(1, min(limit, 2000))
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM trade_executions
+                WHERE created_at >= ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (since_iso, cap),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
     def get_execution(self, execution_id: int) -> dict | None:
         with self.lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM trade_executions WHERE id = ?", (execution_id,)).fetchone()

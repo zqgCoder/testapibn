@@ -182,6 +182,9 @@ def build_tv_skip_result(rejection: TvSandboxRejection) -> dict[str, Any]:
 
 def is_tv_execution_row(row: dict[str, Any], settings: Settings) -> bool:
     skip_reason = str(row.get("skip_reason") or "")
+    status = str(row.get("status") or "")
+    if status == "tv_sandbox_rejected" and skip_reason.startswith("tv_"):
+        return True
     if skip_reason.startswith("tv_"):
         return True
     prefix = settings.tv_signal_id_prefix.strip()

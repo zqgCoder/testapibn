@@ -101,6 +101,21 @@ class Settings(BaseSettings):
     )
     tv_signal_reject_live_binance: bool = Field(default=True, alias="TV_SIGNAL_REJECT_LIVE_BINANCE")
 
+    # ===== V6.0 TradingView Alert Observation =====
+    tv_alert_observation_enabled: bool = Field(default=True, alias="TV_ALERT_OBSERVATION_ENABLED")
+    tv_alert_public_base_url: str = Field(default="", alias="TV_ALERT_PUBLIC_BASE_URL")
+    tv_alert_stale_minutes: int = Field(default=120, alias="TV_ALERT_STALE_MINUTES")
+    tv_alert_observation_window_hours: int = Field(default=24, alias="TV_ALERT_OBSERVATION_WINDOW_HOURS")
+    tv_alert_consecutive_failure_warn: int = Field(default=2, alias="TV_ALERT_CONSECUTIVE_FAILURE_WARN")
+    tv_alert_consecutive_failure_error: int = Field(default=3, alias="TV_ALERT_CONSECUTIVE_FAILURE_ERROR")
+    tv_alert_expected_symbols: str = Field(
+        default="BTCUSDT,ETHUSDT,SOLUSDT", alias="TV_ALERT_EXPECTED_SYMBOLS"
+    )
+
+    @property
+    def tv_alert_expected_symbol_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.tv_alert_expected_symbols.split(",") if s.strip()}
+
     @property
     def tv_signal_allowed_source_set(self) -> set[str]:
         return {s.strip().lower() for s in self.tv_signal_allowed_sources.split(",") if s.strip()}
@@ -191,6 +206,16 @@ class Settings(BaseSettings):
             raise RuntimeError("TV_SIGNAL_ALLOWED_ENTRY_TYPES must not be empty")
         if self.tv_signal_sandbox_enabled and not self.tv_signal_id_prefix.strip():
             raise RuntimeError("TV_SIGNAL_ID_PREFIX must not be empty when TV_SIGNAL_SANDBOX_ENABLED=true")
+        if self.tv_alert_stale_minutes < 1:
+            raise RuntimeError("TV_ALERT_STALE_MINUTES must be >= 1")
+        if self.tv_alert_observation_window_hours < 1 or self.tv_alert_observation_window_hours > 168:
+            raise RuntimeError("TV_ALERT_OBSERVATION_WINDOW_HOURS must be between 1 and 168")
+        if self.tv_alert_consecutive_failure_warn < 1:
+            raise RuntimeError("TV_ALERT_CONSECUTIVE_FAILURE_WARN must be >= 1")
+        if self.tv_alert_consecutive_failure_error < self.tv_alert_consecutive_failure_warn:
+            raise RuntimeError(
+                "TV_ALERT_CONSECUTIVE_FAILURE_ERROR must be >= TV_ALERT_CONSECUTIVE_FAILURE_WARN"
+            )
 
 
 @lru_cache(maxsize=1)

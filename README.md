@@ -461,6 +461,8 @@ GET /dashboard/api/health-overview
 GET /dashboard/api/alerts?limit=20
 GET /dashboard/api/risk-config
 GET /dashboard/api/tv-sandbox/status
+GET /dashboard/api/tv-alert-readiness
+GET /dashboard/api/tv-observation?hours=24
 ```
 
 - 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
@@ -678,4 +680,53 @@ curl -X POST http://127.0.0.1:8000/tradingview \
 ```
 
 接入前请确认：demo/testnet endpoint、沙盒启用、Runtime Control 可用、Dashboard 风控体检无 ERROR。
+
+## TradingView 真实 Alert 接入演练 / 连续运行观察（v6.0）
+
+用于 demo-fapi **连续运行观察**与 **接入前准备检查**。Dashboard 仍然只读，不提供任何交易/锁定操作。
+
+**Binance 必须使用 demo-fapi / testnet**，不允许实盘 endpoint。
+
+### 配置项（见 `.env.example`）
+
+| 变量 | 说明 |
+|------|------|
+| `TV_ALERT_OBSERVATION_ENABLED` | 启用连续观察 |
+| `TV_ALERT_PUBLIC_BASE_URL` | 公网 Webhook 基址（如 ngrok URL，不含 `/tradingview`） |
+| `TV_ALERT_STALE_MINUTES` | 信号 stale 告警阈值（分钟） |
+| `TV_ALERT_OBSERVATION_WINDOW_HOURS` | 默认观察窗口 |
+| `TV_ALERT_CONSECUTIVE_FAILURE_WARN` | 连续失败 WARN 阈值 |
+| `TV_ALERT_CONSECUTIVE_FAILURE_ERROR` | 连续失败 ERROR 阈值 |
+| `TV_ALERT_EXPECTED_SYMBOLS` | 演练预期交易对 |
+
+### Dashboard API
+
+```text
+GET /dashboard/api/tv-alert-readiness
+GET /dashboard/api/tv-observation?hours=24
+```
+
+仅 **Dashboard Token** 鉴权，不返回 secret/token/API key。
+
+### ngrok 与 TradingView Webhook
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+ngrok http 8000
+# TV_ALERT_PUBLIC_BASE_URL=https://xxxx.ngrok-free.app
+```
+
+TradingView Webhook URL：`https://你的公网域名/tradingview`
+
+Alert JSON 示例：`examples/tradingview_alert_v5_tv_sandbox.json`
+
+### Alert Center
+
+| type | 级别 |
+|------|------|
+| `tv_alert_stale` | WARN |
+| `tv_alert_consecutive_failures` | WARN/ERROR |
+| `tv_unprotected_position` | ERROR |
+| `tv_runtime_locked` | WARN |
+| `tv_live_binance_rejected` | WARN |
 
