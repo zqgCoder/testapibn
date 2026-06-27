@@ -359,6 +359,7 @@ GET /dashboard/api/algo-orders
 GET /dashboard/api/runtime-control/status
 GET /dashboard/api/runtime-control/events?limit=10
 GET /dashboard/api/health-overview
+GET /dashboard/api/alerts?limit=20
 ```
 
 Token 可通过请求头 `X-Dashboard-Token` 或 query 参数 `?token=` 传递。
@@ -457,6 +458,7 @@ Dashboard 页面**只读**展示运行锁定状态与最近事件，**不提供*
 GET /dashboard/api/runtime-control/status
 GET /dashboard/api/runtime-control/events?limit=10
 GET /dashboard/api/health-overview
+GET /dashboard/api/alerts?limit=20
 ```
 
 - 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
@@ -484,6 +486,7 @@ Dashboard **只读**展示系统运行健康状态与关键风险提示。不会
 
 ```text
 GET /dashboard/api/health-overview
+GET /dashboard/api/alerts?limit=20
 ```
 
 仅支持 **Dashboard Token** 鉴权，不返回任何 secret/token。
@@ -513,4 +516,39 @@ GET /dashboard/api/health-overview
 `service_health`、`binance_account`、`enable_trading`、`runtime_lock`、`recent_execution`、`open_positions`、`protection_orders`、`api_protection`、`runtime_status_permission`
 
 页面新增 **「系统健康摘要」** 区块：总体等级、关键指标、风险提示列表。接口失败时仅该区块显示错误，不影响整页。
+
+## Alert Center / 告警中心（v5.7）
+
+Dashboard **只读**聚合最近风险事件，来源包括 Health Overview 检查、Journal 执行记录、Runtime Control 事件。不会自动交易、撤单、平仓、解锁或修复。
+
+### Dashboard API
+
+```text
+GET /dashboard/api/alerts?limit=20
+```
+
+- 仅 **Dashboard Token** 鉴权（`X-Dashboard-Token` / `?token=`）
+- `limit` 默认 20，最大 100
+- 不返回任何 secret/token
+- 动态聚合，不新增数据库表
+
+### 告警来源
+
+| source | 说明 |
+|--------|------|
+| `health` | Health Overview 中 WARN/ERROR 检查项 |
+| `journal` | 最近执行：`failed`、`protection_failed`、`blocked_*`、`entry_not_filled` 等 |
+| `runtime` | lock/unlock/auto_expire 事件及当前锁定状态 |
+
+`protected` 等成功状态默认不产生告警，避免噪音。
+
+### 严重级别
+
+| 等级 | 典型场景 |
+|------|----------|
+| **ERROR** | 执行失败、保护单失败、未保护持仓 |
+| **WARN** | Runtime 锁定、风控拒绝、runtime lock 拦截、有持仓 |
+| **INFO** | Runtime 解锁、自动过期 |
+
+页面新增 **「告警中心」** 区块：ERROR/WARN/INFO 计数、最新等级、告警表格。
 

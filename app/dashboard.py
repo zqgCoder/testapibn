@@ -468,6 +468,201 @@ def build_health_overview(
     }
 
 
+_HEALTH_ALERT_TITLES: dict[str, str] = {
+    "service_health": "服务健康检查",
+    "binance_account": "Binance 账户异常",
+    "enable_trading": "交易开关状态",
+    "runtime_lock": "Runtime Control 状态",
+    "recent_execution": "最近执行状态",
+    "open_positions": "当前持仓",
+    "protection_orders": "持仓保护检查",
+    "api_protection": "API Token 保护",
+    "runtime_status_permission": "Runtime 状态读取权限",
+}
+
+_JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
+    "failed": ("ERROR", "执行异常"),
+    "protection_failed": ("ERROR", "保护单失败"),
+    "blocked_by_account_risk": ("WARN", "账户风控拒绝"),
+    "blocked_by_runtime_lock": ("WARN", "信号被 Runtime Lock 拦截"),
+    "entry_not_filled": ("WARN", "信号未成交"),
+    "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
+}
+
+_RUNTIME_EVENT_RULES: dict[str, tuple[str, str, str]] = {
+    "lock": ("WARN", "runtime_lock", "Runtime Control 被锁定"),
+    "auto_expire": ("INFO", "runtime_auto_expire", "Runtime Control 自动解锁"),
+    "unlock": ("INFO", "runtime_unlock", "Runtime Control 已解锁"),
+}
+
+
+def _alert_from_health_check(check: dict[str, str], *, created_at: str | None) -> dict[str, Any] | None:
+    level = check.get("level", "OK")
+    if level not in {"WARN", "ERROR"}:
+        return None
+    name = str(check.get("name") or "health")
+    alert_type = name
+    title = _HEALTH_ALERT_TITLES.get(name, name)
+    if name == "protection_orders" and level == "ERROR":
+        alert_type = "unprotected_position"
+        title = "存在未保护持仓"
+    return {
+        "id": f"health-{name}",
+        "source": "health",
+        "level": level,
+        "type": alert_type,
+        "title": title,
+        "message": str(check.get("message") or ""),
+        "symbol": None,
+        "status": None,
+        "reason": None,
+        "created_at": created_at,
+    }
+
+
+def _alert_from_journal_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    status = str(row.get("status") or "")
+    rule = _JOURNAL_ALERT_RULES.get(status)
+    if rule is None:
+        return None
+    level, title = rule
+    symbol = row.get("symbol")
+    signal_id = row.get("signal_id")
+    skip_reason = row.get("skip_reason")
+    exec_id = row.get("id")
+    message_parts = [str(symbol or "")]
+    if signal_id:
+        message_parts.append(f"signal_id={signal_id}")
+    if skip_reason:
+        message_parts.append(f"reason={skip_reason}")
+    return {
+        "id": f"execution-{exec_id}",
+        "source": "journal",
+        "level": level,
+        "type": skip_reason or status,
+        "title": title,
+        "message": " ".join(p for p in message_parts if p).strip() or title,
+        "symbol": symbol,
+        "status": status,
+        "reason": skip_reason,
+        "created_at": row.get("created_at"),
+    }
+
+
+def _alert_from_runtime_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    action = str(event.get("action") or "")
+    rule = _RUNTIME_EVENT_RULES.get(action)
+    if rule is None:
+        return None
+    level, alert_type, title = rule
+    reason = event.get("reason")
+    actor = event.get("actor")
+    message_parts: list[str] = []
+    if reason:
+        message_parts.append(f"reason={reason}")
+    if actor:
+        message_parts.append(f"actor={actor}")
+    if event.get("locked_until"):
+        message_parts.append(f"locked_until={event.get('locked_until')}")
+    return {
+        "id": f"runtime-{event.get('id')}",
+        "source": "runtime",
+        "level": level,
+        "type": alert_type,
+        "title": title,
+        "message": ", ".join(message_parts) if message_parts else title,
+        "symbol": None,
+        "status": None,
+        "reason": reason,
+        "created_at": event.get("created_at"),
+    }
+
+
+def _alert_summary(alerts: list[dict[str, Any]]) -> dict[str, Any]:
+    error_count = sum(1 for a in alerts if a.get("level") == "ERROR")
+    warn_count = sum(1 for a in alerts if a.get("level") == "WARN")
+    info_count = sum(1 for a in alerts if a.get("level") == "INFO")
+    if error_count:
+        latest_level = "ERROR"
+    elif warn_count:
+        latest_level = "WARN"
+    elif info_count:
+        latest_level = "INFO"
+    else:
+        latest_level = "OK"
+    return {
+        "total": len(alerts),
+        "error_count": error_count,
+        "warn_count": warn_count,
+        "info_count": info_count,
+        "latest_level": latest_level,
+    }
+
+
+def build_alerts(
+    settings: Settings,
+    client: BinanceClient,
+    journal_store: TradeJournalStore,
+    trade_stats: TradeStatsService,
+    runtime_control: RuntimeControl,
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    cap = max(1, min(limit, 100))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    alerts: list[dict[str, Any]] = []
+
+    overview = build_health_overview(settings, client, journal_store, trade_stats, runtime_control)
+    for check in overview.get("checks") or []:
+        alert = _alert_from_health_check(check, created_at=now_iso)
+        if alert:
+            alerts.append(alert)
+
+    journal_scan = max(cap * 3, 50)
+    for row in journal_store.list_executions(limit=journal_scan):
+        alert = _alert_from_journal_row(row)
+        if alert:
+            alerts.append(alert)
+
+    runtime_events = runtime_control.list_events(limit=cap)
+    for event in runtime_events:
+        alert = _alert_from_runtime_event(event)
+        if alert:
+            alerts.append(alert)
+
+    runtime_state = runtime_control.status_payload()
+    if runtime_state.get("enabled") and runtime_state.get("locked"):
+        reason = runtime_state.get("reason") or "未说明"
+        locked_by = runtime_state.get("locked_by") or "-"
+        locked_until = runtime_state.get("locked_until") or "无"
+        alerts.append(
+            {
+                "id": "runtime-lock-current",
+                "source": "runtime",
+                "level": "WARN",
+                "type": "runtime_locked",
+                "title": "Runtime Control 当前处于锁定状态",
+                "message": (
+                    f"reason={reason}, locked_by={locked_by}, locked_until={locked_until}"
+                ),
+                "symbol": None,
+                "status": None,
+                "reason": reason,
+                "created_at": runtime_state.get("locked_at") or runtime_state.get("updated_at"),
+            }
+        )
+
+    alerts.sort(
+        key=lambda item: (str(item.get("created_at") or ""), _health_level_rank(str(item.get("level", "OK")))),
+        reverse=True,
+    )
+    alerts = alerts[:cap]
+    summary = _alert_summary(alerts)
+    return {"告警": alerts, "summary": summary, "数量": len(alerts)}
+
+
 def _check_dashboard_access(
     settings: Settings,
     *,
@@ -643,6 +838,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <h2>系统健康摘要</h2>
       <p class="section-note">只读监控 · 不会自动下单、平仓、撤单或解锁</p>
       <div id="healthOverviewWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>告警中心</h2>
+      <p class="section-note">只读聚合 · 不会自动交易、撤单、平仓或解锁</p>
+      <div id="alertCenterWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
@@ -1024,6 +1227,47 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </table>`;
     }}
 
+    async function loadAlertsSection() {{
+      const wrap = document.getElementById("alertCenterWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/alerts?limit=20");
+        renderAlertCenter(resp);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderAlertCenter(resp) {{
+      const wrap = document.getElementById("alertCenterWrap");
+      const summary = resp.summary || {{}};
+      const alerts = resp["告警"] || [];
+      const level = (summary.latest_level || "OK").toLowerCase();
+      const summaryCards = `
+        <div class="cards" style="margin-bottom:0.75rem">
+          <div class="card"><div class="label">ERROR</div><div class="value">${{esc(summary.error_count ?? 0)}}</div></div>
+          <div class="card"><div class="label">WARN</div><div class="value">${{esc(summary.warn_count ?? 0)}}</div></div>
+          <div class="card"><div class="label">INFO</div><div class="value">${{esc(summary.info_count ?? 0)}}</div></div>
+          <div class="card"><div class="label">最新等级</div><div class="value health-level ${{level}}" style="font-size:1rem">${{esc(summary.latest_level || "OK")}}</div></div>
+        </div>`;
+      if (!alerts.length) {{
+        wrap.innerHTML = summaryCards + '<div class="empty">当前无 WARN/ERROR/INFO 告警</div>';
+        return;
+      }}
+      wrap.innerHTML = summaryCards + `<div style="overflow-x:auto"><table>
+        <thead><tr>
+          <th>时间</th><th>等级</th><th>来源</th><th>类型</th><th>标题</th><th>说明</th>
+        </tr></thead>
+        <tbody>${{alerts.map((a) => `<tr>
+          <td class="mono">${{esc(a.created_at || "-")}}</td>
+          <td><span class="check-level ${{esc((a.level||'OK').toLowerCase())}}">${{esc(a.level)}}</span></td>
+          <td>${{esc(a.source)}}</td>
+          <td class="mono">${{esc(a.type)}}</td>
+          <td>${{esc(a.title)}}</td>
+          <td>${{esc(a.message)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table></div>`;
+    }}
+
     async function loadHealthOverviewSection() {{
       const wrap = document.getElementById("healthOverviewWrap");
       try {{
@@ -1118,6 +1362,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         showError(err.message || String(err));
       }}
       await loadHealthOverviewSection();
+      await loadAlertsSection();
       await loadRuntimeControlSection();
     }}
 
@@ -1434,5 +1679,41 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "健康摘要": overview})
+
+    @router.get("/api/alerts")
+    async def api_alerts(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+        limit: int = 20,
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            payload = build_alerts(
+                settings,
+                client,
+                journal_store,
+                trade_stats,
+                runtime_control,
+                limit=limit,
+            )
+        except Exception as exc:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "数量": 0,
+                    "告警": [],
+                    "summary": {
+                        "total": 0,
+                        "error_count": 0,
+                        "warn_count": 0,
+                        "info_count": 0,
+                        "latest_level": "ERROR",
+                    },
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, **payload})
 
     return router
