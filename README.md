@@ -356,6 +356,8 @@ GET /dashboard/api/runtime
 GET /dashboard/api/health
 GET /dashboard/api/positions
 GET /dashboard/api/algo-orders
+GET /dashboard/api/runtime-control/status
+GET /dashboard/api/runtime-control/events?limit=10
 ```
 
 Token 可通过请求头 `X-Dashboard-Token` 或 query 参数 `?token=` 传递。
@@ -443,4 +445,32 @@ curl -X POST http://127.0.0.1:8000/runtime/unlock \
 ```
 
 若设置了 `locked_until` 且已过期，系统会自动解锁并记录 `auto_expire` 事件。
+
+## Dashboard 展示 Runtime Control（v5.5）
+
+Dashboard 页面**只读**展示运行锁定状态与最近事件，**不提供** lock/unlock 按钮。
+
+### Dashboard 只读 API
+
+```text
+GET /dashboard/api/runtime-control/status
+GET /dashboard/api/runtime-control/events?limit=10
+```
+
+- 仅支持 **Dashboard Token**（`X-Dashboard-Token` 或 `?token=`）
+- **不接受** `RUNTIME_CONTROL_TOKEN` 作为 Dashboard API 鉴权
+- 需 `RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN=true`；否则返回 403「Dashboard 无权限读取运行控制状态」
+- `RUNTIME_CONTROL_ENABLED=false` 时正常返回 `enabled=false`，不报 500
+- 响应中不包含任何 token/secret
+
+### lock/unlock 操作
+
+锁定/解锁只能通过 **Runtime Control Token** 调用：
+
+```text
+POST /runtime/lock
+POST /runtime/unlock
+```
+
+Dashboard Token 只能读取状态，不能执行写操作。
 

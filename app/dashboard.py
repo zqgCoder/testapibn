@@ -11,6 +11,7 @@ from .stats import TradeStatsService
 if TYPE_CHECKING:
     from .binance_client import BinanceClient
     from .config import Settings
+    from .runtime_control import RuntimeControl
     from .storage import TradeJournalStore
 
 
@@ -37,6 +38,25 @@ def require_api_token_if_protected(
     if not protect:
         return
     verify_dashboard_token(settings, query_token=query_token, header_token=header_token)
+
+
+def _guard_runtime_control_dashboard_read(
+    settings: Settings,
+    *,
+    query_token: str | None,
+    header_token: str | None,
+) -> None:
+    """Dashboard runtime-control read: Dashboard Token only, not Runtime Control Token."""
+    _check_dashboard_access(
+        settings,
+        query_token=query_token,
+        header_token=header_token,
+    )
+    if not settings.runtime_status_allow_dashboard_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Dashboard 无权限读取运行控制状态",
+        )
 
 
 def _position_side_from_amt(amt_raw: Any) -> str:
@@ -271,6 +291,11 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     .detail-meta div {{ font-size: 0.82rem; }}
     .detail-meta span {{ color: var(--muted); display: block; font-size: 0.72rem; }}
     .empty {{ color: var(--muted); font-size: 0.85rem; padding: 0.5rem 0; }}
+    .section-note {{ margin: -0.35rem 0 0.75rem; font-size: 0.75rem; color: var(--muted); }}
+    .subsection-title {{ margin: 1rem 0 0.5rem; font-size: 0.9rem; font-weight: 600; }}
+    .lock-badge {{ display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; }}
+    .lock-badge.locked {{ color: var(--warn); border: 1px solid #78350f; }}
+    .lock-badge.unlocked {{ color: var(--ok); border: 1px solid #14532d; }}
   </style>
 </head>
 <body>
@@ -295,6 +320,18 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <div class="card"><div class="label">今日执行</div><div class="value" data-k="today_executions">-</div></div>
       <div class="card"><div class="label">今日保护成功</div><div class="value" data-k="today_protected">-</div></div>
     </div>
+
+    <section>
+      <h2>运行控制</h2>
+      <p class="section-note">只读展示 · 不支持锁定/解锁操作</p>
+      <div id="runtimeControlStatus" class="detail-meta">
+        <div class="empty">加载中...</div>
+      </div>
+      <h3 class="subsection-title">最近运行控制事件</h3>
+      <div style="overflow-x:auto" id="runtimeControlEventsWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
 
     <section>
       <h2>运行状态</h2>
@@ -608,6 +645,75 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </tr>`).join("");
     }}
 
+    function renderRuntimeControlStatus(data) {{
+      const el = document.getElementById("runtimeControlStatus");
+      if (!data) {{
+        el.innerHTML = '<div class="empty">暂无运行控制数据</div>';
+        return;
+      }}
+      if (!data.enabled) {{
+        el.innerHTML = '<div class="empty">Runtime Control 未启用</div>';
+        return;
+      }}
+      const locked = !!data.locked;
+      const lockLabel = locked ? "已锁定" : "未锁定";
+      const lockClass = locked ? "locked" : "unlocked";
+      const fields = [
+        ["Runtime Control", "启用"],
+        ["锁定原因", data.reason],
+        ["锁定人", data.locked_by],
+        ["锁定时间", data.locked_at],
+        ["自动解锁时间", data.locked_until],
+        ["更新时间", data.updated_at],
+      ];
+      let html = `<div><span>当前状态</span><span class="lock-badge ${{lockClass}}">${{lockLabel}}</span></div>`;
+      html += fields.map(([k, v]) => {{
+        const display = (v === null || v === undefined || v === "") ? "-" : v;
+        return `<div><span>${{esc(k)}}</span>${{esc(display)}}</div>`;
+      }}).join("");
+      el.innerHTML = html;
+    }}
+
+    function renderRuntimeControlEvents(rows, errorMessage) {{
+      const wrap = document.getElementById("runtimeControlEventsWrap");
+      if (errorMessage) {{
+        wrap.innerHTML = `<div class="empty">${{esc(errorMessage)}}</div>`;
+        return;
+      }}
+      if (!rows || rows.length === 0) {{
+        wrap.innerHTML = '<div class="empty">暂无运行控制事件</div>';
+        return;
+      }}
+      wrap.innerHTML = `<table>
+        <thead><tr>
+          <th>时间</th><th>action</th><th>reason</th><th>actor</th><th>locked_until</th>
+        </tr></thead>
+        <tbody>${{rows.map((row) => `<tr>
+          <td class="mono">${{esc(row.created_at)}}</td>
+          <td>${{esc(row.action)}}</td>
+          <td>${{esc(row.reason)}}</td>
+          <td>${{esc(row.actor)}}</td>
+          <td class="mono">${{esc(row.locked_until)}}</td>
+        </tr>`).join("")}}</tbody>
+      </table>`;
+    }}
+
+    async function loadRuntimeControlSection() {{
+      const statusEl = document.getElementById("runtimeControlStatus");
+      try {{
+        const statusResp = await apiFetch("/dashboard/api/runtime-control/status");
+        renderRuntimeControlStatus(statusResp["运行控制"] || null);
+      }} catch (err) {{
+        statusEl.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+      try {{
+        const eventsResp = await apiFetch("/dashboard/api/runtime-control/events?limit=10");
+        renderRuntimeControlEvents(eventsResp["事件"] || []);
+      }} catch (err) {{
+        renderRuntimeControlEvents([], err.message || String(err));
+      }}
+    }}
+
     async function loadAll() {{
       clearError();
       const symbol = document.getElementById("filterSymbol").value.trim();
@@ -640,6 +746,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       }} catch (err) {{
         showError(err.message || String(err));
       }}
+      await loadRuntimeControlSection();
     }}
 
     async function openDetail(id) {{
@@ -709,6 +816,7 @@ def create_dashboard_router(
     trade_stats: TradeStatsService,
     client: BinanceClient,
     app_version: str,
+    runtime_control: RuntimeControl,
 ) -> APIRouter:
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -892,5 +1000,35 @@ def create_dashboard_router(
     ):
         guard(request, token, x_dashboard_token)
         return JSONResponse(content={"成功": True, "健康": build_dashboard_health(settings, client)})
+
+    @router.get("/api/runtime-control/status")
+    async def api_runtime_control_status(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        _guard_runtime_control_dashboard_read(
+            settings,
+            query_token=token,
+            header_token=x_dashboard_token,
+        )
+        return JSONResponse(
+            content={"成功": True, "运行控制": runtime_control.status_payload()}
+        )
+
+    @router.get("/api/runtime-control/events")
+    async def api_runtime_control_events(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+        limit: int = 10,
+    ):
+        _guard_runtime_control_dashboard_read(
+            settings,
+            query_token=token,
+            header_token=x_dashboard_token,
+        )
+        rows = runtime_control.list_events(limit=limit)
+        return JSONResponse(content={"成功": True, "数量": len(rows), "事件": rows})
 
     return router

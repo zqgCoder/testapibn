@@ -55,11 +55,15 @@ runtime_control = RuntimeControl(settings, runtime_store)
 trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
 store = SignalStore(settings.sqlite_path)
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 
-app.include_router(create_dashboard_router(settings, journal_store, trade_stats, client, APP_VERSION))
+app.include_router(
+    create_dashboard_router(
+        settings, journal_store, trade_stats, client, APP_VERSION, runtime_control
+    )
+)
 
 
 @app.exception_handler(RequestValidationError)
