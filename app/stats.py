@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 from .journal import STATUS_LABELS_ZH
+from .redaction import redact_json_text, redact_sensitive
 from .storage import TradeJournalStore
 
 
@@ -77,19 +77,19 @@ class TradeStatsService:
                 "估算止损总亏损": row.get("estimated_total_loss_at_sl"),
                 "账户风控通过": row.get("account_risk_allowed"),
                 "账户风控拒绝原因": row.get("account_risk_skip_reason"),
-                "原始信号": _maybe_json(row.get("raw_signal_json")),
-                "交易计划": _maybe_json(row.get("plan_json")),
-                "账户风控": _maybe_json(row.get("account_risk_json")),
-                "进场摘要": _maybe_json(row.get("entry_summary_json")),
-                "保护单摘要": _maybe_json(row.get("protection_summary_json")),
-                "执行结果": _maybe_json(row.get("result_json")),
+                "原始信号": redact_json_text(row.get("raw_signal_json")),
+                "交易计划": redact_json_text(row.get("plan_json")),
+                "账户风控": redact_json_text(row.get("account_risk_json")),
+                "进场摘要": redact_json_text(row.get("entry_summary_json")),
+                "保护单摘要": redact_json_text(row.get("protection_summary_json")),
+                "执行结果": redact_json_text(row.get("result_json")),
             }
         )
-        return detail
+        return redact_sensitive(detail)
 
     @staticmethod
     def order_brief(row: dict) -> dict:
-        return {
+        brief = {
             "编号": row.get("id"),
             "执行编号": row.get("execution_id"),
             "信号编号": row.get("signal_key"),
@@ -108,15 +108,7 @@ class TradeStatsService:
             "触发价": row.get("trigger_price"),
             "只减仓": row.get("reduce_only"),
             "全平": row.get("close_position"),
-            "原始订单": _maybe_json(row.get("raw_order_json")),
+            "原始订单": redact_json_text(row.get("raw_order_json")),
             "创建时间": row.get("created_at"),
         }
-
-
-def _maybe_json(raw: str | None):
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        return raw
+        return redact_sensitive(brief)

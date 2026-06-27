@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 from decimal import Decimal
 from typing import Any
 
 from .schemas import TradingViewSignal
+from .redaction import journal_json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +35,6 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
     ExecutionStatus.FAILED: "执行异常",
 }
-
-
-def _json_dumps(value: Any) -> str | None:
-    if value is None:
-        return None
-    return json.dumps(value, default=str, ensure_ascii=False)
 
 
 def _filled_qty_from_result(result: dict) -> Decimal:
@@ -123,7 +117,7 @@ def _order_row_from_response(
             "trigger_price": None,
             "reduce_only": None,
             "close_position": None,
-            "raw_order_json": _json_dumps(payload),
+            "raw_order_json": journal_json_dumps(payload),
         }
 
     order_id = payload.get("orderId") or payload.get("order_id")
@@ -155,7 +149,7 @@ def _order_row_from_response(
         "trigger_price": _decimal_str(payload.get("triggerPrice") or payload.get("stopPrice")),
         "reduce_only": reduce_only,
         "close_position": close_position,
-        "raw_order_json": _json_dumps(payload),
+        "raw_order_json": journal_json_dumps(payload),
     }
 
 
@@ -242,12 +236,12 @@ class TradeJournal:
                     "leverage": plan.get("leverage"),
                     "account_risk_allowed": 1 if account_risk_summary.get("allowed", True) else 0,
                     "account_risk_skip_reason": account_risk_summary.get("skip_reason"),
-                    "raw_signal_json": _json_dumps(raw_payload),
-                    "plan_json": _json_dumps(plan),
-                    "account_risk_json": _json_dumps(account_risk_summary) if account_risk_summary else None,
-                    "entry_summary_json": _json_dumps(entry_summary) if entry_summary else None,
-                    "protection_summary_json": _json_dumps(protection_summary) if protection_summary else None,
-                    "result_json": _json_dumps(result),
+                    "raw_signal_json": journal_json_dumps(raw_payload),
+                    "plan_json": journal_json_dumps(plan),
+                    "account_risk_json": journal_json_dumps(account_risk_summary) if account_risk_summary else None,
+                    "entry_summary_json": journal_json_dumps(entry_summary) if entry_summary else None,
+                    "protection_summary_json": journal_json_dumps(protection_summary) if protection_summary else None,
+                    "result_json": journal_json_dumps(result),
                 }
             )
             symbol = str(plan.get("symbol") or signal.symbol).upper()
@@ -289,12 +283,12 @@ class TradeJournal:
                     "leverage": plan.get("leverage"),
                     "account_risk_allowed": None,
                     "account_risk_skip_reason": None,
-                    "raw_signal_json": _json_dumps(raw_payload),
-                    "plan_json": _json_dumps(plan) if plan else None,
-                    "account_risk_json": _json_dumps((result or {}).get("account_risk_summary")),
-                    "entry_summary_json": _json_dumps((result or {}).get("entry_summary")),
-                    "protection_summary_json": _json_dumps((result or {}).get("protection_summary")),
-                    "result_json": _json_dumps(result) if result else None,
+                    "raw_signal_json": journal_json_dumps(raw_payload),
+                    "plan_json": journal_json_dumps(plan) if plan else None,
+                    "account_risk_json": journal_json_dumps((result or {}).get("account_risk_summary")),
+                    "entry_summary_json": journal_json_dumps((result or {}).get("entry_summary")),
+                    "protection_summary_json": journal_json_dumps((result or {}).get("protection_summary")),
+                    "result_json": journal_json_dumps(result) if result else None,
                 }
             )
             if result:
