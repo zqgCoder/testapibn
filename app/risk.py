@@ -21,11 +21,11 @@ class TradePlan:
     take_profits: list[tuple[Decimal, Decimal]]  # [(trigger_price, quantity)]
     working_type: str
     dry_run: bool
+    risk_mode: str
+
+    # V4 entry and optional audit fields (defaults must follow non-default fields).
     entry_type: str = "market"
     limit_price: Decimal | None = None
-
-    # Risk audit fields. Present for both manual and risk modes when available.
-    risk_mode: str
     account_asset: str | None = None
     account_balance: Decimal | None = None
     account_available_balance: Decimal | None = None
