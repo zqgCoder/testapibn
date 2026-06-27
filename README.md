@@ -730,3 +730,95 @@ Alert JSON 示例：`examples/tradingview_alert_v5_tv_sandbox.json`
 | `tv_runtime_locked` | WARN |
 | `tv_live_binance_rejected` | WARN |
 
+## ngrok + TradingView 云端 Alert 实测归档（v6.1）
+
+分支：`v6.1-tv-cloud-alert-test` · 基于稳定版 `v6.0-stable`。
+
+本版本**仅归档 Runbook / 实测记录**，不修改交易逻辑、不修改 `.env`、`signals.db`、`logs`、`.venv`。
+
+### v6.1 目标
+
+验证完整云端链路：
+
+```text
+TradingView 云端 Alert
+  → ngrok HTTPS
+  → 本机 POST /tradingview
+  → TV Sandbox 校验
+  → Runtime Control（锁定拦截）
+  → Journal 写入
+  → Dashboard / Alert Center / TV Observation 展示
+```
+
+**Binance 仍必须使用 demo-fapi / testnet**，不允许实盘 endpoint（`BINANCE_BASE_URL` 须为 `demo-fapi` 或 testnet；`TV_SIGNAL_REJECT_LIVE_BINANCE=true` 时 TV 信号在实盘 URL 会被拒绝）。
+
+### ngrok 启动注意事项
+
+1. **ngrok agent 版本 >= 3.20.0**（过旧版本可能导致隧道或 HTTPS 异常）。
+2. **ngrok 窗口不要设置 `HTTP_PROXY` / `HTTPS_PROXY`**，避免代理干扰隧道。
+3. **TradingView Webhook URL 格式**：
+
+   ```text
+   https://xxxx.ngrok-free.app/tradingview
+   ```
+
+   路径必须为 `/tradingview`，方法为 `POST`。
+
+### 本地 `.env` 配置（不提交）
+
+在本地 `.env` 中设置公网基址（示例占位，替换为你的 ngrok 域名）：
+
+```env
+TV_ALERT_PUBLIC_BASE_URL=https://xxxx.ngrok-free.app
+```
+
+- **不要**将 `.env` 提交到 Git。
+- **不要**在 README 或任何文档中写入 `WEBHOOK_SECRET` 明文。
+- TradingView Alert Message JSON 中的 `"secret"` 须与本地 `WEBHOOK_SECRET` 一致，但 secret 值仅保存在本地与 TradingView Alert 配置中。
+
+Dashboard **TV 接入准备**（`GET /dashboard/api/tv-alert-readiness`）的 `summary` 会展示：
+
+- `app_version`（当前 `1.13.0`）
+- `required_method`: `POST`
+- `required_path`: `/tradingview`
+- `webhook_url_hint`: `https://xxxx.ngrok-free.app/tradingview`（配置 `TV_ALERT_PUBLIC_BASE_URL` 后）
+
+### Runtime Lock 云端 Alert 拦截测试（已执行）
+
+| 项 | 结果 |
+|----|------|
+| 测试 `signal_id` | `TV-BTCUSDT-CLOUD-LOCK-001` |
+| ngrok 请求 | `POST /tradingview` → **200 OK** |
+| Journal `status` | `blocked_by_runtime_lock` |
+| `skip_reason` | `runtime_locked` |
+| TV Observation | `total_tv_signals` 增加；`blocked_by_runtime_lock_count` 增加 |
+| Alert Center | 出现 **「信号被 Runtime Lock 拦截」**（WARN） |
+
+说明：Runtime Lock 优先于 TV Sandbox 策略校验与下单；信号已接收并写入 journal，但未查余额、未改杠杆、未下单。
+
+### 本次 v6.1 不继续做解锁下单测试
+
+原因：
+
+1. **v5.9** 已在 demo-fapi 完成开仓与保护单验证。
+2. 当前 demo-fapi **已有 BTCUSDT 持仓与保护单**。
+3. 若解锁后继续发 TV 信号，可能触发 `DEFAULT_POSITION_POLICY=replace`：**重复开仓 / 清仓**，不利于本轮「云端链路 + 锁定拦截」归档。
+
+因此 v6.1 实测范围止于 **Runtime Lock 拦截** 与 Dashboard 观测，不包含 unlock 后的真实下单。
+
+### 测试后安全动作（建议）
+
+1. **保持 Runtime Lock**（演练结束仍锁定，防止误触发 webhook 下单）。
+2. **轮换 `WEBHOOK_SECRET`**（本地 `.env` 更新为新随机字符串）。
+3. **同步更新 TradingView Alert Message** 中的 `"secret"` 字段（与新区间一致）。
+4. **不要**将 secret、Dashboard Token、Runtime Control Token、Binance API Key/Secret 提交到 Git 或写入 README。
+
+### 相关 API 与页面（只读）
+
+```text
+GET /dashboard/api/tv-alert-readiness
+GET /dashboard/api/tv-observation?hours=24
+GET /dashboard/api/alerts?limit=20
+```
+
+Alert JSON 示例仍使用 `examples/tradingview_alert_v5_tv_sandbox.json`（将 `secret` 替换为本地值，勿提交真实 secret）。
