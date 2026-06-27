@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Extra safety padding for estimated fees, e.g. 1.1 = add 10% buffer.
     fee_safety_multiplier: float = Field(default=1.10, alias="FEE_SAFETY_MULTIPLIER")
 
+    # When true, close the open position if stop-loss / take-profit placement fails after entry.
+    emergency_close_on_protection_fail: bool = Field(default=False, alias="EMERGENCY_CLOSE_ON_PROTECTION_FAIL")
+
     @property
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}

@@ -660,6 +660,188 @@ class Trader:
 
         return True, self._plan_for_filled_quantity(signal, plan, filled_qty)
 
+    @staticmethod
+    def _is_binance_error_code(exc: Exception, code: int) -> bool:
+        if not isinstance(exc, BinanceAPIError):
+            return False
+        text = str(exc)
+        return f'"code":{code}' in text or f'"code": {code}' in text
+
+    @staticmethod
+    def _position_meets_entry_expectation(
+        position_amt: Decimal,
+        expected_side: str,
+        min_abs_qty: Decimal,
+    ) -> bool:
+        threshold = min_abs_qty * Decimal("0.8")
+        if expected_side == "BUY":
+            return position_amt > 0 and abs(position_amt) >= threshold
+        return position_amt < 0 and abs(position_amt) >= threshold
+
+    def _wait_for_position_after_entry(
+        self,
+        symbol: str,
+        expected_side: str,
+        min_abs_qty: Decimal,
+        timeout_sec: float = 5,
+        poll_interval_sec: float = 0.5,
+    ) -> tuple[bool, Decimal]:
+        deadline = time.time() + max(0.0, timeout_sec)
+        latest_amt = Decimal("0")
+
+        while True:
+            latest_amt = self.client.current_position_amount(symbol)
+            if self._position_meets_entry_expectation(latest_amt, expected_side, min_abs_qty):
+                return True, latest_amt
+            if time.time() >= deadline:
+                return False, latest_amt
+            time.sleep(min(poll_interval_sec, max(0.0, deadline - time.time())))
+
+    @staticmethod
+    def _new_protection_summary() -> dict:
+        return {
+            "position_confirmed": False,
+            "confirmed_position_amt": None,
+            "stop_loss_submitted": False,
+            "take_profit_submitted_count": 0,
+            "protection_skipped_reason": None,
+        }
+
+    def _submit_stop_loss_with_retry(self, plan: TradePlan) -> tuple[bool, dict | None, Exception | None]:
+        assert plan.stop_loss_price is not None
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                result = self.client.stop_loss_close_position(
+                    symbol=plan.symbol,
+                    close_side=plan.close_side,
+                    trigger_price=plan.stop_loss_price,
+                    working_type=plan.working_type,
+                )
+                return True, result, None
+            except BinanceAPIError as exc:
+                last_exc = exc
+                if not self._is_binance_error_code(exc, -4509) or attempt >= 3:
+                    return False, None, exc
+                logger.warning(
+                    "Stop loss rejected with -4509, waiting 0.5s before retry: symbol=%s attempt=%s/3",
+                    plan.symbol,
+                    attempt + 1,
+                )
+                time.sleep(0.5)
+                position_amt = self.client.current_position_amount(plan.symbol)
+                if not self._position_meets_entry_expectation(position_amt, plan.side, plan.quantity):
+                    logger.warning(
+                        "Position not visible after -4509: symbol=%s position_amt=%s",
+                        plan.symbol,
+                        position_amt,
+                    )
+        return False, None, last_exc
+
+    def _handle_emergency_close_on_protection_fail(
+        self,
+        plan: TradePlan,
+        responses: dict,
+        protection_summary: dict,
+    ) -> None:
+        if not self.settings.emergency_close_on_protection_fail:
+            logger.warning(
+                "Protection orders incomplete but EMERGENCY_CLOSE_ON_PROTECTION_FAIL=false; "
+                "symbol=%s position left open",
+                plan.symbol,
+            )
+            return
+
+        position_amt = self.client.current_position_amount(plan.symbol)
+        if position_amt == 0:
+            logger.warning(
+                "Emergency close skipped (no visible position): symbol=%s",
+                plan.symbol,
+            )
+            return
+
+        logger.error(
+            "Emergency close triggered after protection failure: symbol=%s position_amt=%s",
+            plan.symbol,
+            position_amt,
+        )
+        responses["orders"]["emergency_close"] = self.client.close_position_market(
+            symbol=plan.symbol,
+            position_amt=position_amt,
+            client_order_id=self._client_order_id("tvemerg"),
+        )
+        protection_summary["emergency_close_attempted"] = True
+
+    def _submit_protections_after_entry(self, effective_plan: TradePlan, responses: dict) -> None:
+        protection_summary = self._new_protection_summary()
+        responses["protection_summary"] = protection_summary
+
+        confirmed, position_amt = self._wait_for_position_after_entry(
+            effective_plan.symbol,
+            effective_plan.side,
+            effective_plan.quantity,
+        )
+        protection_summary["confirmed_position_amt"] = format(position_amt, "f")
+
+        if not confirmed:
+            protection_summary["protection_skipped_reason"] = "position_not_available_after_entry"
+            responses["protection_skipped_reason"] = "position_not_available_after_entry"
+            logger.error(
+                "entry may not be filled or position not visible yet: symbol=%s side=%s "
+                "expected_qty=%s position_amt=%s",
+                effective_plan.symbol,
+                effective_plan.side,
+                effective_plan.quantity,
+                position_amt,
+            )
+            return
+
+        protection_summary["position_confirmed"] = True
+
+        if effective_plan.stop_loss_price is not None:
+            sl_ok, sl_result, sl_exc = self._submit_stop_loss_with_retry(effective_plan)
+            if sl_ok and sl_result is not None:
+                responses["orders"]["stop_loss"] = sl_result
+                protection_summary["stop_loss_submitted"] = True
+                logger.info(
+                    "Stop loss submitted: symbol=%s trigger=%s",
+                    effective_plan.symbol,
+                    effective_plan.stop_loss_price,
+                )
+            else:
+                responses["orders"]["stop_loss_error"] = str(sl_exc) if sl_exc else "unknown"
+                logger.error(
+                    "Stop loss submission failed: symbol=%s error=%s",
+                    effective_plan.symbol,
+                    sl_exc,
+                )
+
+        tp_responses = []
+        for idx, (tp_price, tp_qty) in enumerate(effective_plan.take_profits, start=1):
+            try:
+                tp_responses.append(
+                    self.client.take_profit_market(
+                        symbol=effective_plan.symbol,
+                        close_side=effective_plan.close_side,
+                        trigger_price=tp_price,
+                        quantity=tp_qty,
+                        working_type=effective_plan.working_type,
+                    )
+                )
+                protection_summary["take_profit_submitted_count"] += 1
+                logger.info("TP %s submitted: price=%s qty=%s", idx, tp_price, tp_qty)
+            except BinanceAPIError as exc:
+                logger.error("TP %s submission failed: symbol=%s error=%s", idx, effective_plan.symbol, exc)
+                tp_responses.append({"error": str(exc)})
+        responses["orders"]["take_profits"] = tp_responses
+
+        sl_required = effective_plan.stop_loss_price is not None
+        tp_required = len(effective_plan.take_profits) > 0
+        sl_failed = sl_required and not protection_summary["stop_loss_submitted"]
+        tp_failed = tp_required and protection_summary["take_profit_submitted_count"] < len(effective_plan.take_profits)
+        if sl_failed or tp_failed:
+            self._handle_emergency_close_on_protection_fail(effective_plan, responses, protection_summary)
+
     def execute(self, signal: TradingViewSignal, signal_key: str) -> dict:
         plan = self.prepare_plan(signal)
         logger.info("Trade plan: %s", json.dumps(asdict(plan), default=str, ensure_ascii=False))
@@ -686,27 +868,7 @@ class Trader:
         if effective_plan.quantity != plan.quantity or effective_plan.take_profits != plan.take_profits:
             responses["effective_plan"] = asdict(effective_plan)
 
-        if effective_plan.stop_loss_price is not None:
-            responses["orders"]["stop_loss"] = self.client.stop_loss_close_position(
-                symbol=effective_plan.symbol,
-                close_side=effective_plan.close_side,
-                trigger_price=effective_plan.stop_loss_price,
-                working_type=effective_plan.working_type,
-            )
-
-        tp_responses = []
-        for idx, (tp_price, tp_qty) in enumerate(effective_plan.take_profits, start=1):
-            tp_responses.append(
-                self.client.take_profit_market(
-                    symbol=effective_plan.symbol,
-                    close_side=effective_plan.close_side,
-                    trigger_price=tp_price,
-                    quantity=tp_qty,
-                    working_type=effective_plan.working_type,
-                )
-            )
-            logger.info("TP %s submitted: price=%s qty=%s", idx, tp_price, tp_qty)
-        responses["orders"]["take_profits"] = tp_responses
+        self._submit_protections_after_entry(effective_plan, responses)
 
         logger.info("Execution result: %s", json.dumps(responses, default=str, ensure_ascii=False))
         return responses
