@@ -4,22 +4,37 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 
 from .binance_client import BinanceAPIError, BinanceClient
 from .config import Settings
-from .exchange_rules import ExchangeRules, floor_to_step, normalize_market_quantity
+from .exchange_rules import ExchangeRules, SymbolRules, floor_to_step, normalize_market_quantity
 from .risk import (
     TradePlan,
     allocate_tp_quantities,
     build_manual_trade_plan,
     build_risk_based_trade_plan,
+    calculate_quantity_for_target_risk,
+    ceil_decimal_to_int,
+    estimate_stop_loss_loss,
+    estimate_used_risk_at_entry,
     validate_price_levels,
 )
 from .schemas import TradingViewSignal, normalize_side, opposite_side
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FallbackRecalcResult:
+    final_order_qty: Decimal | None
+    fallback_plan: TradePlan | None
+    skip_reason: str | None
+    used_risk_usdt: Decimal | None
+    remaining_risk_usdt: Decimal | None
+    estimated_total_loss_usdt: Decimal | None
+    recalculated_qty: Decimal | None
 
 
 class Trader:
@@ -170,6 +185,17 @@ class Trader:
             "fallback_executed": False,
             "skip_reason": None,
             "latest_price_used": None,
+            "fallback_recalculated": False,
+            "fallback_original_entry_ref_price": format(plan.entry_ref_price, "f"),
+            "fallback_latest_price": None,
+            "fallback_original_requested_qty": format(plan.quantity, "f"),
+            "fallback_recalculated_qty": None,
+            "fallback_final_order_qty": None,
+            "fallback_target_risk_usdt": None,
+            "fallback_estimated_total_loss_usdt": None,
+            "fallback_remaining_risk_usdt": None,
+            "fallback_used_risk_usdt": None,
+            "fallback_recalculated_leverage": None,
         }
 
     def _check_market_slippage(
@@ -235,14 +261,302 @@ class Trader:
         logger.warning("Limit fallback to market blocked: ALLOW_MARKET_ENTRY=false")
         return False
 
-    def _normalize_fallback_remaining_qty(
+    def _limit_entry_avg_price(self, plan: TradePlan, *orders: dict | None) -> Decimal:
+        for order in orders:
+            if not order:
+                continue
+            avg = self._decimal_from_order(order, "avgPrice")
+            if avg > 0:
+                return avg
+        return plan.limit_price or plan.entry_ref_price
+
+    def _build_manual_fallback_plan(
         self,
-        symbol: str,
-        remaining_qty: Decimal,
+        signal: TradingViewSignal,
+        original_plan: TradePlan,
         latest_price: Decimal,
-    ) -> Decimal | None:
-        rules = self.rules.get(symbol)
-        return normalize_market_quantity(remaining_qty, rules, latest_price)
+        rules: SymbolRules,
+    ) -> TradePlan:
+        return build_manual_trade_plan(
+            symbol=original_plan.symbol,
+            side=original_plan.side,
+            close_side=original_plan.close_side,
+            entry_ref_price=latest_price,
+            margin_usdt=original_plan.margin_usdt,
+            notional_usdt=original_plan.notional_usdt,
+            leverage=original_plan.leverage,
+            sl=signal.sl,
+            tps=signal.tps,
+            rules=rules,
+            working_type=original_plan.working_type,
+            dry_run=original_plan.dry_run,
+            fee_rate_used=original_plan.fee_rate_used,
+            entry_type="market",
+            limit_price=original_plan.limit_price,
+        )
+
+    def _build_risk_fallback_plan(
+        self,
+        signal: TradingViewSignal,
+        original_plan: TradePlan,
+        latest_price: Decimal,
+        rules: SymbolRules,
+    ) -> TradePlan:
+        assert original_plan.account_asset is not None
+        assert original_plan.account_balance is not None
+        assert original_plan.account_available_balance is not None
+        assert original_plan.selected_balance is not None
+        assert original_plan.fee_rate_used is not None
+        assert original_plan.max_leverage_allowed is not None
+        assert signal.sl is not None
+
+        return build_risk_based_trade_plan(
+            symbol=original_plan.symbol,
+            side=original_plan.side,
+            close_side=original_plan.close_side,
+            entry_ref_price=latest_price,
+            risk_mode=original_plan.risk_mode,
+            risk_pct=signal.risk_pct,
+            risk_usdt=signal.risk_usdt,
+            margin_usdt=signal.margin_usdt,
+            sl=signal.sl,
+            tps=signal.tps,
+            rules=rules,
+            working_type=original_plan.working_type,
+            dry_run=original_plan.dry_run,
+            account_asset=original_plan.account_asset,
+            account_balance=original_plan.account_balance,
+            account_available_balance=original_plan.account_available_balance,
+            selected_balance=original_plan.selected_balance,
+            fee_rate_used=original_plan.fee_rate_used,
+            max_leverage_allowed=original_plan.max_leverage_allowed,
+            auto_margin_balance_pct=Decimal(str(self.settings.auto_margin_balance_pct)),
+            entry_type="market",
+            limit_price=original_plan.limit_price,
+        )
+
+    def _build_partial_risk_fallback_plan(
+        self,
+        original_plan: TradePlan,
+        latest_price: Decimal,
+        fallback_qty: Decimal,
+    ) -> TradePlan:
+        assert original_plan.stop_loss_price is not None
+        assert original_plan.fee_rate_used is not None
+        assert original_plan.margin_usdt is not None
+
+        notional = fallback_qty * latest_price
+        leverage = max(1, ceil_decimal_to_int(notional / original_plan.margin_usdt))
+        if original_plan.max_leverage_allowed is not None:
+            leverage = min(leverage, original_plan.max_leverage_allowed)
+
+        price_loss, fees, total_loss = estimate_stop_loss_loss(
+            fallback_qty,
+            latest_price,
+            original_plan.stop_loss_price,
+            original_plan.fee_rate_used,
+        )
+        return replace(
+            original_plan,
+            entry_ref_price=latest_price,
+            quantity=fallback_qty,
+            notional_usdt=notional,
+            leverage=leverage,
+            margin_usdt=floor_to_step(notional / Decimal(leverage), Decimal("0.00000001")),
+            estimated_price_loss_usdt=price_loss,
+            estimated_fees_usdt=fees,
+            estimated_total_loss_at_sl=total_loss,
+            entry_type="market",
+        )
+
+    def _recalculate_fallback_market_plan(
+        self,
+        signal: TradingViewSignal,
+        original_plan: TradePlan,
+        latest_price: Decimal,
+        already_filled_qty: Decimal,
+        already_filled_avg_price: Decimal,
+        rules: SymbolRules,
+    ) -> FallbackRecalcResult:
+        try:
+            validate_price_levels(
+                original_plan.side,
+                latest_price,
+                original_plan.stop_loss_price,
+                signal.tps,
+            )
+        except ValueError as exc:
+            return FallbackRecalcResult(None, None, str(exc), None, None, None, None)
+
+        fee_rate = original_plan.fee_rate_used or Decimal("0")
+        sl_price = original_plan.stop_loss_price
+        used_risk = Decimal("0")
+        remaining_risk: Decimal | None = None
+        target_risk = original_plan.target_risk_usdt
+
+        if (
+            already_filled_qty > 0
+            and sl_price is not None
+            and original_plan.risk_mode in {"fixed_usdt", "fixed_pct"}
+            and target_risk is not None
+        ):
+            used_risk = estimate_used_risk_at_entry(
+                already_filled_qty,
+                already_filled_avg_price,
+                sl_price,
+                fee_rate,
+            )
+            remaining_risk = target_risk - used_risk
+            if remaining_risk <= 0:
+                logger.warning(
+                    "Limit fallback remaining risk exhausted: symbol=%s target_risk=%s used_risk=%s",
+                    original_plan.symbol,
+                    target_risk,
+                    used_risk,
+                )
+                return FallbackRecalcResult(
+                    None,
+                    None,
+                    "fallback_remaining_risk_exhausted",
+                    used_risk,
+                    remaining_risk,
+                    used_risk,
+                    None,
+                )
+
+        recalculated_qty: Decimal
+        fallback_plan: TradePlan
+
+        if original_plan.risk_mode == "manual":
+            fallback_plan = self._build_manual_fallback_plan(signal, original_plan, latest_price, rules)
+            if already_filled_qty > 0:
+                recalculated_qty = fallback_plan.quantity - already_filled_qty
+                if recalculated_qty <= 0:
+                    return FallbackRecalcResult(
+                        None,
+                        None,
+                        "fallback_recalculated_qty_below_exchange_minimum",
+                        used_risk if used_risk > 0 else None,
+                        remaining_risk,
+                        None,
+                        fallback_plan.quantity,
+                    )
+            else:
+                recalculated_qty = fallback_plan.quantity
+        else:
+            assert sl_price is not None
+            if already_filled_qty > 0 and remaining_risk is not None:
+                recalculated_qty = calculate_quantity_for_target_risk(
+                    remaining_risk,
+                    latest_price,
+                    sl_price,
+                    fee_rate,
+                    rules,
+                    validate=False,
+                )
+                fallback_plan = original_plan
+            else:
+                fallback_plan = self._build_risk_fallback_plan(signal, original_plan, latest_price, rules)
+                recalculated_qty = fallback_plan.quantity
+
+        final_order_qty = normalize_market_quantity(recalculated_qty, rules, latest_price)
+        if final_order_qty is None:
+            return FallbackRecalcResult(
+                None,
+                fallback_plan,
+                "fallback_recalculated_qty_below_exchange_minimum",
+                used_risk if used_risk > 0 else None,
+                remaining_risk,
+                None,
+                recalculated_qty,
+            )
+
+        if original_plan.risk_mode != "manual" and already_filled_qty > 0 and remaining_risk is not None:
+            fallback_plan = self._build_partial_risk_fallback_plan(original_plan, latest_price, final_order_qty)
+        elif original_plan.risk_mode == "manual":
+            fallback_plan = replace(fallback_plan, quantity=final_order_qty, notional_usdt=final_order_qty * latest_price)
+        else:
+            fallback_plan = replace(fallback_plan, quantity=final_order_qty, notional_usdt=final_order_qty * latest_price)
+
+        estimated_total: Decimal | None
+        if (
+            already_filled_qty > 0
+            and sl_price is not None
+            and original_plan.risk_mode in {"fixed_usdt", "fixed_pct"}
+            and target_risk is not None
+        ):
+            _, _, fallback_loss = estimate_stop_loss_loss(final_order_qty, latest_price, sl_price, fee_rate)
+            estimated_total = used_risk + (fallback_loss or Decimal("0"))
+            if estimated_total > target_risk:
+                logger.warning(
+                    "Limit fallback total estimated loss slightly above target due to precision/fees: "
+                    "symbol=%s target_risk=%s estimated_total=%s",
+                    original_plan.symbol,
+                    target_risk,
+                    estimated_total,
+                )
+        else:
+            estimated_total = fallback_plan.estimated_total_loss_at_sl
+
+        return FallbackRecalcResult(
+            final_order_qty=final_order_qty,
+            fallback_plan=fallback_plan,
+            skip_reason=None,
+            used_risk_usdt=used_risk if used_risk > 0 else None,
+            remaining_risk_usdt=remaining_risk,
+            estimated_total_loss_usdt=estimated_total,
+            recalculated_qty=recalculated_qty,
+        )
+
+    def _apply_fallback_recalc_to_entry_summary(
+        self,
+        entry_summary: dict,
+        original_plan: TradePlan,
+        latest_price: Decimal,
+        recalc: FallbackRecalcResult,
+    ) -> None:
+        entry_summary["fallback_recalculated"] = True
+        entry_summary["fallback_latest_price"] = format(latest_price, "f")
+        entry_summary["fallback_recalculated_qty"] = (
+            format(recalc.recalculated_qty, "f") if recalc.recalculated_qty is not None else None
+        )
+        entry_summary["fallback_final_order_qty"] = (
+            format(recalc.final_order_qty, "f") if recalc.final_order_qty is not None else None
+        )
+        entry_summary["fallback_target_risk_usdt"] = (
+            format(original_plan.target_risk_usdt, "f") if original_plan.target_risk_usdt is not None else None
+        )
+        entry_summary["fallback_estimated_total_loss_usdt"] = (
+            format(recalc.estimated_total_loss_usdt, "f") if recalc.estimated_total_loss_usdt is not None else None
+        )
+        entry_summary["fallback_remaining_risk_usdt"] = (
+            format(recalc.remaining_risk_usdt, "f") if recalc.remaining_risk_usdt is not None else None
+        )
+        entry_summary["fallback_used_risk_usdt"] = (
+            format(recalc.used_risk_usdt, "f") if recalc.used_risk_usdt is not None else None
+        )
+
+        logger.info(
+            "Limit fallback risk recalculated:\n"
+            "original_entry_ref_price=%s\n"
+            "latest_price=%s\n"
+            "original_qty=%s\n"
+            "recalculated_qty=%s\n"
+            "final_order_qty=%s\n"
+            "target_risk=%s\n"
+            "estimated_loss=%s\n"
+            "used_risk=%s\n"
+            "remaining_risk=%s",
+            original_plan.entry_ref_price,
+            latest_price,
+            original_plan.quantity,
+            recalc.recalculated_qty,
+            recalc.final_order_qty,
+            original_plan.target_risk_usdt,
+            recalc.estimated_total_loss_usdt,
+            recalc.used_risk_usdt,
+            recalc.remaining_risk_usdt,
+        )
 
     def _prepare_market_entry(
         self,
@@ -265,7 +579,8 @@ class Trader:
         self,
         signal: TradingViewSignal,
         plan: TradePlan,
-        qty: Decimal,
+        already_filled_qty: Decimal,
+        already_filled_avg_price: Decimal,
         entry_summary: dict,
         responses: dict,
         response_key: str,
@@ -276,26 +591,44 @@ class Trader:
         if not self._can_fallback_to_market(signal):
             entry_summary["skip_reason"] = "limit_unfilled_market_disabled"
             logger.warning(
-                "Limit fallback skipped (market disabled): symbol=%s side=%s qty=%s",
+                "Limit fallback skipped (market disabled): symbol=%s side=%s already_filled_qty=%s",
                 plan.symbol,
                 plan.side,
-                qty,
+                already_filled_qty,
             )
             return Decimal("0"), False
 
         latest_price = self.client.ticker_price(plan.symbol)
         entry_summary["latest_price_used"] = format(latest_price, "f")
+        rules = self.rules.get(plan.symbol)
 
-        normalized_qty = self._normalize_fallback_remaining_qty(plan.symbol, qty, latest_price)
-        if normalized_qty is None:
-            entry_summary["skip_reason"] = "remaining_qty_below_exchange_minimum"
-            logger.warning(
-                "Limit fallback skipped (qty below exchange minimum): symbol=%s raw_qty=%s latest=%s",
-                plan.symbol,
-                qty,
+        try:
+            recalc = self._recalculate_fallback_market_plan(
+                signal,
+                plan,
                 latest_price,
+                already_filled_qty,
+                already_filled_avg_price,
+                rules,
+            )
+        except ValueError as exc:
+            entry_summary["skip_reason"] = str(exc)
+            logger.warning("Limit fallback recalculation failed: symbol=%s error=%s", plan.symbol, exc)
+            return Decimal("0"), False
+
+        self._apply_fallback_recalc_to_entry_summary(entry_summary, plan, latest_price, recalc)
+
+        if recalc.skip_reason:
+            entry_summary["skip_reason"] = recalc.skip_reason
+            logger.warning(
+                "Limit fallback skipped after recalculation: symbol=%s skip_reason=%s",
+                plan.symbol,
+                recalc.skip_reason,
             )
             return Decimal("0"), False
+
+        assert recalc.final_order_qty is not None
+        assert recalc.fallback_plan is not None
 
         try:
             self._prepare_market_entry(signal, plan, latest_price, context="limit_fallback")
@@ -304,18 +637,30 @@ class Trader:
             logger.warning("Limit fallback aborted by pre-check: symbol=%s error=%s", plan.symbol, exc)
             return Decimal("0"), False
 
+        fallback_leverage = max(plan.leverage, recalc.fallback_plan.leverage)
+        if fallback_leverage != plan.leverage:
+            responses["orders"]["fallback_leverage"] = self.client.change_leverage(plan.symbol, fallback_leverage)
+            entry_summary["fallback_recalculated_leverage"] = fallback_leverage
+            logger.info(
+                "Limit fallback leverage updated: symbol=%s original=%s recalculated=%s applied=%s",
+                plan.symbol,
+                plan.leverage,
+                recalc.fallback_plan.leverage,
+                fallback_leverage,
+            )
+
         responses["orders"][response_key] = self.client.new_market_order(
             symbol=plan.symbol,
             side=plan.side,
-            quantity=normalized_qty,
+            quantity=recalc.final_order_qty,
             client_order_id=self._client_order_id("tvfallback"),
         )
-        fallback_qty = self._decimal_from_order(responses["orders"][response_key], "executedQty", "cumQty") or normalized_qty
+        fallback_qty = self._decimal_from_order(responses["orders"][response_key], "executedQty", "cumQty") or recalc.final_order_qty
         entry_summary["fallback_executed"] = True
         logger.info(
             "Limit fallback market order executed: symbol=%s qty=%s filled=%s",
             plan.symbol,
-            normalized_qty,
+            recalc.final_order_qty,
             fallback_qty,
         )
         return fallback_qty, True
@@ -573,6 +918,8 @@ class Trader:
 
         status = str(final_order.get("status", "")).upper()
         filled_qty = self._decimal_from_order(final_order, "executedQty", "cumQty")
+        cancel_order: dict | None = None
+        checked_order: dict | None = None
 
         if status != "FILLED":
             try:
@@ -593,10 +940,13 @@ class Trader:
                         order_id=final_order.get("orderId") or limit_order.get("orderId"),
                         orig_client_order_id=final_order.get("clientOrderId") or limit_order.get("clientOrderId"),
                     )
+                    checked_order = checked
                     responses["orders"]["open_limit_after_cancel_check"] = checked
                     filled_qty = max(filled_qty, self._decimal_from_order(checked, "executedQty", "cumQty"))
                 except Exception as check_exc:
                     responses["orders"]["open_limit_after_cancel_check_error"] = str(check_exc)
+
+        limit_avg_price = self._limit_entry_avg_price(plan, final_order, cancel_order, checked_order, limit_order)
 
         remaining_qty = plan.quantity - filled_qty
         if remaining_qty < 0:
@@ -613,7 +963,8 @@ class Trader:
                 fallback_qty, _ = self._execute_market_fallback(
                     signal,
                     plan,
-                    plan.quantity,
+                    Decimal("0"),
+                    limit_avg_price,
                     entry_summary,
                     responses,
                     "open_market_fallback",
@@ -629,7 +980,8 @@ class Trader:
                 fallback_qty, _ = self._execute_market_fallback(
                     signal,
                     plan,
-                    remaining_qty,
+                    filled_qty,
+                    limit_avg_price,
                     entry_summary,
                     responses,
                     "open_market_fallback_remaining",

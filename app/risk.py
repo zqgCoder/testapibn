@@ -102,6 +102,42 @@ def estimate_stop_loss_loss(quantity: Decimal, entry_price: Decimal, sl_price: D
     return price_loss, fees, total
 
 
+def per_unit_total_loss_at_entry(entry_price: Decimal, sl_price: Decimal, fee_rate: Decimal) -> Decimal:
+    per_unit_price_loss = abs(entry_price - sl_price)
+    per_unit_fees = (entry_price + sl_price) * fee_rate
+    per_unit_total_loss = per_unit_price_loss + per_unit_fees
+    if per_unit_total_loss <= 0:
+        raise ValueError("止损距离或手续费计算异常，无法计算仓位")
+    return per_unit_total_loss
+
+
+def calculate_quantity_for_target_risk(
+    target_risk: Decimal,
+    entry_price: Decimal,
+    sl_price: Decimal,
+    fee_rate: Decimal,
+    rules: SymbolRules,
+    *,
+    validate: bool = True,
+) -> Decimal:
+    per_unit_total_loss = per_unit_total_loss_at_entry(entry_price, sl_price, fee_rate)
+    quantity = floor_to_step(target_risk / per_unit_total_loss, rules.market_qty_step)
+    if validate:
+        _validate_quantity_notional(quantity, entry_price, rules)
+    return quantity
+
+
+def estimate_used_risk_at_entry(
+    filled_qty: Decimal,
+    entry_price: Decimal,
+    sl_price: Decimal,
+    fee_rate: Decimal,
+) -> Decimal:
+    if filled_qty <= 0:
+        return Decimal("0")
+    return filled_qty * per_unit_total_loss_at_entry(entry_price, sl_price, fee_rate)
+
+
 def _validate_quantity_notional(quantity: Decimal, entry_ref_price: Decimal, rules: SymbolRules) -> None:
     if quantity <= 0:
         raise ValueError(f"计算出的下单数量无效：{quantity}")
