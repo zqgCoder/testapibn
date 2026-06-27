@@ -1,0 +1,17 @@
+{
+  "secret": "2RvuKNzNfQ6KCWY3WhHx",
+  "signal_id": "BTCUSDT-reverse-test-long-001",
+  "symbol": "BTCUSDT",
+  "side": "buy",
+  "risk_mode": "fixed_usdt",
+  "risk_usdt": 2,
+  "margin_usdt": 50,
+  "sl": 58500,
+  "tps": [
+    {"price": 63000, "qty_pct": 0.5},
+    {"price": 65000, "qty_pct": 0.3},
+    {"price": 72000, "qty_pct": 0.2}
+  ],
+  "cancel_before_open": true,
+  "working_type": "MARK_PRICE"
+}

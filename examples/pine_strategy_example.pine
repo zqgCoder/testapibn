@@ -1,0 +1,18 @@
+//@version=5
+strategy("Webhook Example: TV -> Python -> Binance", overlay=true, calc_on_every_tick=false)
+
+fast = ta.ema(close, 9)
+slow = ta.ema(close, 21)
+plot(fast)
+plot(slow)
+
+longSignal = ta.crossover(fast, slow)
+shortSignal = ta.crossunder(fast, slow)
+
+secret = "replace_with_a_long_random_secret"
+
+if longSignal
+    alert('{"secret":"' + secret + '","signal_id":"BTCUSDT-' + str.tostring(time) + '-long","symbol":"BTCUSDT","side":"buy","margin_usdt":20,"leverage":2,"sl":65000,"tps":[{"price":68000,"qty_pct":0.5},{"price":70000,"qty_pct":0.3},{"price":72000,"qty_pct":0.2}],"cancel_before_open":true,"working_type":"MARK_PRICE"}', alert.freq_once_per_bar_close)
+
+if shortSignal
+    alert('{"secret":"' + secret + '","signal_id":"BTCUSDT-' + str.tostring(time) + '-short","symbol":"BTCUSDT","side":"sell","margin_usdt":20,"leverage":2,"sl":72000,"tps":[{"price":68000,"qty_pct":0.5},{"price":66000,"qty_pct":0.3},{"price":64000,"qty_pct":0.2}],"cancel_before_open":true,"working_type":"MARK_PRICE"}', alert.freq_once_per_bar_close)

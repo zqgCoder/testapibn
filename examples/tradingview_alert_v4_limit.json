@@ -1,0 +1,22 @@
+{
+  "secret": "replace_with_your_webhook_secret",
+  "signal_id": "BTCUSDT-v4-limit-short-001",
+  "symbol": "BTCUSDT",
+  "side": "sell",
+  "entry_type": "limit",
+  "limit_price": 60200,
+  "limit_timeout_sec": 60,
+  "limit_fallback_to_market": false,
+  "risk_mode": "fixed_usdt",
+  "risk_usdt": 3,
+  "margin_usdt": 50,
+  "sl": 61000,
+  "tps": [
+    {"price": 58500, "qty_pct": 0.5},
+    {"price": 57000, "qty_pct": 0.3},
+    {"price": 55000, "qty_pct": 0.2}
+  ],
+  "cancel_before_open": true,
+  "position_policy": "ignore_same_side",
+  "working_type": "MARK_PRICE"
+}

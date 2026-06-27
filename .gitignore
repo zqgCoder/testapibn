@@ -1,0 +1,47 @@
+# secrets
+.env
+
+# database
+signals.db
+*.db
+*.sqlite
+*.sqlite3
+
+# logs
+logs/
+*.log
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+
+# build/cache
+.gradle/
+build/
+dist/
+.cache/
+tmp/
+temp/
+node_modules/
+
+# archives
+*.zip
+*.rar
+*.7z
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db

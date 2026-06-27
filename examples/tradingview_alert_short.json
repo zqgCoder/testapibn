@@ -1,0 +1,27 @@
+{
+  "secret": "replace_with_a_long_random_secret",
+  "signal_id": "BTCUSDT-fixed-usdt-demo-short-001",
+  "symbol": "BTCUSDT",
+  "side": "sell",
+  "risk_mode": "fixed_usdt",
+  "risk_usdt": 2,
+  "margin_usdt": 50,
+  "sl": 61000,
+  "tps": [
+    {
+      "price": 58500,
+      "qty_pct": 0.5
+    },
+    {
+      "price": 57000,
+      "qty_pct": 0.3
+    },
+    {
+      "price": 55000,
+      "qty_pct": 0.2
+    }
+  ],
+  "cancel_before_open": true,
+  "working_type": "MARK_PRICE",
+  "position_policy": "replace"
+}

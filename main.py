@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from dataclasses import asdict
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from app.binance_client import BinanceClient
+from app.config import get_settings
+from app.exchange_rules import ExchangeRules
+from app.schemas import TradingViewSignal, normalize_side
+from app.storage import SignalStore
+from app.trader import Trader
+from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
+
+settings = get_settings()
+
+Path("logs").mkdir(exist_ok=True)
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler("logs/bot.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("tv_binance_bot")
+
+client = BinanceClient(settings)
+rules = ExchangeRules(client)
+trader = Trader(settings, client, rules)
+store = SignalStore(settings.sqlite_path)
+
+app = FastAPI(title="TradingView to Binance Futures Bot", version="1.4.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    details = []
+    for err in exc.errors():
+        loc = " -> ".join(str(x) for x in err.get("loc", []))
+        msg = err.get("msg", "参数错误")
+        details.append({"位置": loc, "说明": msg, "输入值": err.get("input")})
+    return JSONResponse(
+        status_code=422,
+        content={
+            "成功": False,
+            "错误": "请求参数校验失败，请检查 JSON 字段和值。",
+            "详情": details,
+        },
+    )
+
+
+def make_signal_key(signal: TradingViewSignal, raw_payload: dict) -> str:
+    """
+    Prefer signal_id when supplied by TradingView/Pine.
+    Otherwise hash the JSON payload to reduce accidental duplicate processing.
+    """
+    if signal.signal_id:
+        return signal.signal_id.strip()
+    normalized = json.dumps(raw_payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def execute_background(signal: TradingViewSignal, signal_key: str) -> None:
+    try:
+        trader.execute(signal, signal_key)
+        store.mark_done(signal_key)
+    except Exception as exc:
+        logger.exception("Signal execution failed: key=%s error=%s", signal_key, exc)
+        store.mark_failed(signal_key, str(exc))
+
+
+@app.get("/health")
+async def health():
+    return {
+        "成功": True,
+        "是否允许真实下单": settings.enable_trading,
+        "币安接口地址": settings.binance_base_url,
+        "允许交易的币对": sorted(settings.allowed_symbol_set),
+    }
+
+
+def clean_path_symbol(symbol: str) -> str:
+    s = symbol.strip().upper().replace("BINANCE:", "").replace(".P", "")
+    if not s:
+        raise HTTPException(status_code=422, detail="交易对不能为空")
+    if settings.allowed_symbol_set and s not in settings.allowed_symbol_set:
+        raise HTTPException(status_code=422, detail=f"交易对 {s} 不在 ALLOWED_SYMBOLS 白名单中")
+    return s
+
+
+@app.get("/account")
+async def account():
+    """查看合约账户余额。"""
+    balances = client.futures_balance()
+    return JSONResponse(
+        content={
+            "成功": True,
+            "账户余额": to_jsonable(balances),
+        }
+    )
+
+
+@app.get("/positions")
+async def positions(include_zero: bool = False):
+    """查看当前合约持仓。默认只显示非 0 持仓。"""
+    rows = client.position_risk()
+    rows = rows if isinstance(rows, list) else [rows]
+    if not include_zero:
+        rows = [r for r in rows if str(r.get("positionAmt", "0")) not in {"0", "0.0", "0.00", "0.000", "0.0000"}]
+    return JSONResponse(
+        content={
+            "成功": True,
+            "持仓数量": len(rows),
+            "持仓": [position_to_chinese(r) for r in rows],
+        }
+    )
+
+
+@app.get("/positions/{symbol}")
+async def position_by_symbol(symbol: str):
+    """查看某个交易对的持仓。"""
+    symbol = clean_path_symbol(symbol)
+    rows = client.position_risk(symbol)
+    rows = rows if isinstance(rows, list) else [rows]
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "持仓": [position_to_chinese(r) for r in rows],
+        }
+    )
+
+
+@app.get("/open-orders/{symbol}")
+async def open_orders(symbol: str):
+    """查看某个交易对的普通未成交委托。"""
+    symbol = clean_path_symbol(symbol)
+    rows = client.open_orders(symbol)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "普通委托数量": len(rows),
+            "普通委托": [order_to_chinese(r) for r in rows],
+        }
+    )
+
+
+@app.get("/algo-orders/{symbol}")
+async def algo_orders(symbol: str):
+    """查看某个交易对的止损/止盈等条件单。"""
+    symbol = clean_path_symbol(symbol)
+    rows = client.open_algo_orders(symbol)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "条件单数量": len(rows),
+            "条件单": [algo_order_to_chinese(r) for r in rows],
+        }
+    )
+
+
+@app.delete("/orders/{symbol}")
+async def cancel_orders(symbol: str):
+    """手动取消某个交易对的普通委托和条件单。"""
+    symbol = clean_path_symbol(symbol)
+    result = {"regular": None, "algo": None}
+    try:
+        result["regular"] = client.cancel_all_open_orders(symbol)
+    except Exception as exc:
+        result["regular_error"] = str(exc)
+    try:
+        result["algo"] = client.cancel_all_algo_open_orders(symbol)
+    except Exception as exc:
+        result["algo_error"] = str(exc)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "提示": "已尝试取消普通委托和条件单。",
+            "结果": to_jsonable(result),
+        }
+    )
+
+
+@app.post("/tradingview")
+async def tradingview_webhook(request: Request, background_tasks: BackgroundTasks):
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是合法 JSON")
+
+    try:
+        signal = TradingViewSignal.model_validate(raw_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if signal.secret != settings.webhook_secret:
+        raise HTTPException(status_code=401, detail="Webhook 密钥错误")
+
+    try:
+        side = normalize_side(signal.side)
+        signal_key = make_signal_key(signal, raw_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if store.exists(signal_key):
+        return JSONResponse(
+            status_code=200,
+            content={"成功": True, "是否重复信号": True, "信号编号": signal_key, "提示": "该信号已经接收过，已被防重复机制拦截"},
+        )
+
+    store.mark_received(signal_key, signal.symbol, side, json.dumps(raw_payload, default=str, ensure_ascii=False))
+    background_tasks.add_task(execute_background, signal, signal_key)
+
+    return {
+        "成功": True,
+        "已接收": True,
+        "信号编号": signal_key,
+        "是否允许真实下单": settings.enable_trading,
+        "提示": "信号已接收，请查看 logs/bot.log 获取执行详情。",
+    }
+
+
+@app.post("/plan")
+async def plan_only(signal: TradingViewSignal):
+    """Local debugging endpoint: validate a signal and return the calculated trade plan without placing orders."""
+    if signal.secret != settings.webhook_secret:
+        raise HTTPException(status_code=401, detail="Webhook 密钥错误")
+    signal.dry_run = True
+    plan = trader.prepare_plan(signal)
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易计划": trade_plan_to_chinese(plan),
+            "原始字段": trade_plan_raw(plan),
+        }
+    )

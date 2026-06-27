@@ -1,0 +1,21 @@
+{
+  "secret": "replace_with_your_webhook_secret",
+  "signal_id": "BTCUSDT-v4-market-long-001",
+  "symbol": "BTCUSDT",
+  "side": "buy",
+  "entry_type": "market",
+  "signal_price": 60000,
+  "max_slippage_pct": 0.3,
+  "risk_mode": "fixed_usdt",
+  "risk_usdt": 3,
+  "margin_usdt": 50,
+  "sl": 58000,
+  "tps": [
+    {"price": 63000, "qty_pct": 0.5},
+    {"price": 65000, "qty_pct": 0.3},
+    {"price": 72000, "qty_pct": 0.2}
+  ],
+  "cancel_before_open": true,
+  "position_policy": "ignore_same_side",
+  "working_type": "MARK_PRICE"
+}

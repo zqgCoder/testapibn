@@ -1,0 +1,470 @@
+//@version=6
+strategy("盈利因子优化版｜高频突破回测｜多周期状态面板", overlay=true, max_labels_count=500, max_lines_count=500, pyramiding=0, process_orders_on_close=true)
+
+// =====================
+// 回测时间
+// =====================
+daysBack = input.int(365, "回测最近多少天", minval=1)
+startTime = timenow - daysBack * 24 * 60 * 60 * 1000
+inBacktest = time >= startTime
+
+// =====================
+// 高频突破参数
+// =====================
+breakLen = input.int(12, "突破通道长度", minval=3)
+confirmBars = input.int(2, "突破站稳K线数量", minval=1, maxval=3)
+cooldownBars = input.int(5, "开单冷却K线数", minval=0, maxval=50)
+
+// =====================
+// 趋势与入场过滤
+// =====================
+useHTFEMAFilter = input.bool(true, "启用高周期EMA9/21主趋势过滤")
+htfTf = input.timeframe("60", "EMA主趋势周期")
+emaFastLen = input.int(9, "EMA快线", minval=1)
+emaSlowLen = input.int(21, "EMA慢线", minval=2)
+
+emaHTFFast = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
+emaHTFSlow = request.security(syminfo.tickerid, htfTf, ta.ema(close, emaSlowLen), barmerge.gaps_off, barmerge.lookahead_off)
+emaTrendLong = emaHTFFast > emaHTFSlow
+emaTrendShort = emaHTFFast < emaHTFSlow
+
+useEntryEMAFilter = input.bool(false, "启用当前周期EMA9过滤")
+entryEMA = ta.ema(close, emaFastLen)
+entryEmaLongOk = not useEntryEMAFilter or close > entryEMA
+entryEmaShortOk = not useEntryEMAFilter or close < entryEMA
+
+useRSIFilter = input.bool(true, "启用RSI过滤")
+rsiLen = input.int(14, "RSI长度", minval=1)
+rsiLongMin = input.float(20.0, "做多RSI最低值", minval=1, maxval=99)
+rsiLongMax = input.float(85.0, "做多RSI最高值", minval=1, maxval=99)
+rsiShortMin = input.float(15.0, "做空RSI最低值", minval=1, maxval=99)
+rsiShortMax = input.float(80.0, "做空RSI最高值", minval=1, maxval=99)
+rsiValue = ta.rsi(close, rsiLen)
+rsiLongOk = not useRSIFilter or (rsiValue >= rsiLongMin and rsiValue <= rsiLongMax)
+rsiShortOk = not useRSIFilter or (rsiValue >= rsiShortMin and rsiValue <= rsiShortMax)
+
+useMACDFilter = input.bool(true, "启用MACD方向过滤")
+macdFast = input.int(12, "MACD快线", minval=1)
+macdSlow = input.int(26, "MACD慢线", minval=2)
+macdSignalLen = input.int(9, "MACD信号线", minval=1)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignalLen)
+macdLongOk = not useMACDFilter or macdLine > macdSignal
+macdShortOk = not useMACDFilter or macdLine < macdSignal
+
+useVolumeFilter = input.bool(false, "启用Volume放量过滤")
+volumeLen = input.int(20, "Volume均线长度", minval=1)
+volumeMultiplier = input.float(0.8, "Volume放量倍数", minval=0.1, step=0.1)
+volumeMA = ta.sma(volume, volumeLen)
+volumeOk = not useVolumeFilter or volume >= volumeMA * volumeMultiplier
+
+useADXFilter = input.bool(true, "启用ADX过滤")
+adxLen = input.int(14, "ADX长度", minval=1)
+adxSmooth = input.int(14, "ADX平滑", minval=1)
+adxMin = input.float(15.0, "ADX最低值", minval=1)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+adxOk = not useADXFilter or adxValue >= adxMin
+
+// =====================
+// ATR 止盈止损
+// =====================
+atrLen = input.int(14, "ATR长度", minval=1)
+useScaleOut = input.bool(false, "启用分批止盈（TP1/TP2/TP3）")
+tpAtrMult = input.float(1.2, "单一止盈ATR倍数（分批关闭时）", minval=0.1, step=0.1)
+tp1AtrMult = input.float(1.0, "TP1 ATR倍数", minval=0.1, step=0.1)
+tp1QtyInput = input.float(50.0, "TP1 平仓比例%", minval=0, maxval=100, step=1)
+tp2AtrMult = input.float(1.5, "TP2 ATR倍数", minval=0.1, step=0.1)
+tp2QtyInput = input.float(30.0, "TP2 平仓比例%", minval=0, maxval=100, step=1)
+tp3AtrMult = input.float(2.0, "TP3 ATR倍数", minval=0.1, step=0.1)
+slAtrMult = input.float(1.0, "止损ATR倍数", minval=0.1, step=0.1)
+atrValue = ta.atr(atrLen)
+var float entryATR = na
+
+// 防止 TP1 + TP2 的比例超过 100%；TP3 自动使用其余仓位。
+tp1Qty = math.min(tp1QtyInput, 100.0)
+tp2Qty = math.min(tp2QtyInput, 100.0 - tp1Qty)
+tp3Qty = 100.0 - tp1Qty - tp2Qty
+
+// =====================
+// 显示设置
+// =====================
+showBreakChannel = input.bool(true, "显示突破通道线")
+showEMA = input.bool(false, "显示EMA线")
+showSignalLabel = input.bool(true, "显示简洁开单标签")
+showExitLabel = input.bool(true, "显示止盈/止损结果标签")
+labelAtrOffset = input.float(0.8, "标签距K线距离（ATR倍数）", minval=0.1, step=0.1)
+showTable = input.bool(true, "显示当前周期回测表")
+showMTFTable = input.bool(true, "显示右上角多周期状态")
+showTPSLLine = input.bool(true, "显示止盈止损线")
+signalTimeZone = input.string("Asia/Shanghai", "时间时区", options=["Asia/Shanghai", "Asia/Seoul", "Etc/UTC", "America/New_York"])
+timeText = str.format_time(time, "yyyy-MM-dd HH:mm", signalTimeZone)
+
+// =====================
+// Webhook 自动下单设置（发送到 Python/FastAPI 机器人）
+// =====================
+enableWebhook = input.bool(false, "启用Webhook真实发送")
+webhookSecret = input.string("请填写新的WEBHOOK_SECRET", "Webhook Secret")
+botSymbol = input.string("BTCUSDT", "机器人交易对")
+botRiskUsdt = input.float(3.0, "机器人固定风险USDT", minval=0.1, step=0.1)
+botMarginUsdt = input.float(50.0, "机器人保证金预算USDT", minval=1, step=1)
+botPositionPolicy = input.string("ignore_same_side", "已有持仓处理", options=["replace", "reverse_only", "ignore_same_side", "add"])
+botWorkingType = input.string("MARK_PRICE", "触发价格类型", options=["MARK_PRICE", "CONTRACT_PRICE"])
+
+// V4：进场方式。market=市价；limit=限价等待成交。
+botEntryType = input.string("market", "进场方式", options=["market", "limit"])
+botLimitOffsetPct = input.float(0.20, "限价偏移%（多单低挂/空单高挂）", minval=0.0, step=0.01)
+botLimitTimeoutSec = input.int(60, "限价等待成交秒数", minval=0, maxval=3600)
+botLimitFallbackToMarket = input.bool(false, "限价超时后改市价")
+botMaxSlippagePct = input.float(0.30, "市价最大滑点%", minval=0.0, maxval=10.0, step=0.01)
+webhookMinSlBufferPct = input.float(0.25, "Webhook最小止损缓冲%", minval=0.01, step=0.01)
+
+f_jsonPrice(x) =>
+    str.tostring(x, format.mintick)
+
+f_jsonNum(x) =>
+    str.tostring(x)
+
+f_jsonTp(price, qtyRatio) =>
+    '{"price":' + f_jsonPrice(price) + ',"qty_pct":' + f_jsonNum(qtyRatio) + '}'
+
+f_entryJson(limitPrice) =>
+    botEntryType == "limit" ? '"entry_type":"limit","limit_price":' + f_jsonPrice(limitPrice) + ',"limit_timeout_sec":' + str.tostring(botLimitTimeoutSec) + ',"limit_fallback_to_market":' + (botLimitFallbackToMarket ? "true" : "false") + ',' : '"entry_type":"market","signal_price":' + f_jsonPrice(close) + ',"max_slippage_pct":' + f_jsonNum(botMaxSlippagePct) + ','
+
+
+// =====================
+// 突破站稳逻辑
+// =====================
+upperBreakChannel = ta.highest(high, breakLen)[1]
+lowerBreakChannel = ta.lowest(low, breakLen)[1]
+breakLongRaw = close > upperBreakChannel
+breakShortRaw = close < lowerBreakChannel
+
+breakLongPrev1 = bar_index > 0 ? breakLongRaw[1] : false
+breakLongPrev2 = bar_index > 1 ? breakLongRaw[2] : false
+breakLongPrev3 = bar_index > 2 ? breakLongRaw[3] : false
+breakShortPrev1 = bar_index > 0 ? breakShortRaw[1] : false
+breakShortPrev2 = bar_index > 1 ? breakShortRaw[2] : false
+breakShortPrev3 = bar_index > 2 ? breakShortRaw[3] : false
+
+bool breakLongConfirm = false
+bool breakShortConfirm = false
+if confirmBars == 1
+    breakLongConfirm := breakLongRaw and not breakLongPrev1
+    breakShortConfirm := breakShortRaw and not breakShortPrev1
+else if confirmBars == 2
+    breakLongConfirm := breakLongRaw and breakLongPrev1 and not breakLongPrev2
+    breakShortConfirm := breakShortRaw and breakShortPrev1 and not breakShortPrev2
+else
+    breakLongConfirm := breakLongRaw and breakLongPrev1 and breakLongPrev2 and not breakLongPrev3
+    breakShortConfirm := breakShortRaw and breakShortPrev1 and breakShortPrev2 and not breakShortPrev3
+
+var int lastEntryBar = na
+cooldownOk = na(lastEntryBar) or bar_index - lastEntryBar > cooldownBars
+flatOk = strategy.position_size == 0
+
+longSignal = inBacktest and flatOk and cooldownOk and breakLongConfirm and (not useHTFEMAFilter or emaTrendLong) and entryEmaLongOk and rsiLongOk and macdLongOk and volumeOk and adxOk
+shortSignal = inBacktest and flatOk and cooldownOk and breakShortConfirm and (not useHTFEMAFilter or emaTrendShort) and entryEmaShortOk and rsiShortOk and macdShortOk and volumeOk and adxOk
+
+// =====================
+// Webhook 动态 JSON：使用当前信号K线 close 与 ATR 计算止损止盈
+// =====================
+longAlertSLRaw = close - atrValue * slAtrMult
+shortAlertSLRaw = close + atrValue * slAtrMult
+// 安全缓冲：避免 TradingView close 与 Binance 实时价偏差导致止损方向不合法。
+longAlertSL = math.min(longAlertSLRaw, close * (1 - webhookMinSlBufferPct / 100))
+shortAlertSL = math.max(shortAlertSLRaw, close * (1 + webhookMinSlBufferPct / 100))
+
+longAlertTP = close + atrValue * tpAtrMult
+longAlertTP1 = close + atrValue * tp1AtrMult
+longAlertTP2 = close + atrValue * tp2AtrMult
+longAlertTP3 = close + atrValue * tp3AtrMult
+
+shortAlertTP = close - atrValue * tpAtrMult
+shortAlertTP1 = close - atrValue * tp1AtrMult
+shortAlertTP2 = close - atrValue * tp2AtrMult
+shortAlertTP3 = close - atrValue * tp3AtrMult
+
+longLimitPrice = close * (1 - botLimitOffsetPct / 100)
+shortLimitPrice = close * (1 + botLimitOffsetPct / 100)
+longEntryJson = f_entryJson(longLimitPrice)
+shortEntryJson = f_entryJson(shortLimitPrice)
+
+// Python 机器人 qty_pct 使用 0.5 / 0.3 / 0.2 这种小数；脚本输入为百分比，所以要除以 100。
+tp1QtyRatio = tp1Qty / 100.0
+tp2QtyRatio = tp2Qty / 100.0
+tp3QtyRatio = tp3Qty / 100.0
+
+longTpsJson = useScaleOut ? '[' + f_jsonTp(longAlertTP1, tp1QtyRatio) + ',' + f_jsonTp(longAlertTP2, tp2QtyRatio) + ',' + f_jsonTp(longAlertTP3, tp3QtyRatio) + ']' : '[' + f_jsonTp(longAlertTP, 1.0) + ']'
+shortTpsJson = useScaleOut ? '[' + f_jsonTp(shortAlertTP1, tp1QtyRatio) + ',' + f_jsonTp(shortAlertTP2, tp2QtyRatio) + ',' + f_jsonTp(shortAlertTP3, tp3QtyRatio) + ']' : '[' + f_jsonTp(shortAlertTP, 1.0) + ']'
+
+longWebhookMsg =
+     '{"secret":"' + webhookSecret + '",' +
+     '"signal_id":"' + botSymbol + '-' + timeframe.period + '-' + str.tostring(time) + '-long",' +
+     '"symbol":"' + botSymbol + '",' +
+     '"side":"buy",' +
+     longEntryJson +
+     '"risk_mode":"fixed_usdt",' +
+     '"risk_usdt":' + f_jsonNum(botRiskUsdt) + ',' +
+     '"margin_usdt":' + f_jsonNum(botMarginUsdt) + ',' +
+     '"sl":' + f_jsonPrice(longAlertSL) + ',' +
+     '"tps":' + longTpsJson + ',' +
+     '"cancel_before_open":true,' +
+     '"working_type":"' + botWorkingType + '",' +
+     '"position_policy":"' + botPositionPolicy + '"' +
+     '}'
+
+shortWebhookMsg =
+     '{"secret":"' + webhookSecret + '",' +
+     '"signal_id":"' + botSymbol + '-' + timeframe.period + '-' + str.tostring(time) + '-short",' +
+     '"symbol":"' + botSymbol + '",' +
+     '"side":"sell",' +
+     shortEntryJson +
+     '"risk_mode":"fixed_usdt",' +
+     '"risk_usdt":' + f_jsonNum(botRiskUsdt) + ',' +
+     '"margin_usdt":' + f_jsonNum(botMarginUsdt) + ',' +
+     '"sl":' + f_jsonPrice(shortAlertSL) + ',' +
+     '"tps":' + shortTpsJson + ',' +
+     '"cancel_before_open":true,' +
+     '"working_type":"' + botWorkingType + '",' +
+     '"position_policy":"' + botPositionPolicy + '"' +
+     '}'
+
+if longSignal
+    strategy.entry("Long", strategy.long)
+    entryATR := atrValue
+    lastEntryBar := bar_index
+    if enableWebhook
+        alert(longWebhookMsg, alert.freq_once_per_bar_close)
+if shortSignal
+    strategy.entry("Short", strategy.short)
+    entryATR := atrValue
+    lastEntryBar := bar_index
+    if enableWebhook
+        alert(shortWebhookMsg, alert.freq_once_per_bar_close)
+if strategy.position_size == 0 and not longSignal and not shortSignal
+    entryATR := na
+
+atrForExit = na(entryATR) ? atrValue : entryATR
+longTP = strategy.position_avg_price + atrForExit * tpAtrMult
+longSL = strategy.position_avg_price - atrForExit * slAtrMult
+shortTP = strategy.position_avg_price - atrForExit * tpAtrMult
+shortSL = strategy.position_avg_price + atrForExit * slAtrMult
+longTP1 = strategy.position_avg_price + atrForExit * tp1AtrMult
+longTP2 = strategy.position_avg_price + atrForExit * tp2AtrMult
+longTP3 = strategy.position_avg_price + atrForExit * tp3AtrMult
+shortTP1 = strategy.position_avg_price - atrForExit * tp1AtrMult
+shortTP2 = strategy.position_avg_price - atrForExit * tp2AtrMult
+shortTP3 = strategy.position_avg_price - atrForExit * tp3AtrMult
+
+if strategy.position_size > 0
+    if useScaleOut
+        if tp1Qty > 0
+            strategy.exit("Long TP1", from_entry="Long", limit=longTP1, stop=longSL, qty_percent=tp1Qty, comment_profit="TP1", comment_loss="SL")
+        if tp2Qty > 0
+            strategy.exit("Long TP2", from_entry="Long", limit=longTP2, stop=longSL, qty_percent=tp2Qty, comment_profit="TP2", comment_loss="SL")
+        if tp3Qty > 0
+            strategy.exit("Long TP3", from_entry="Long", limit=longTP3, stop=longSL, qty_percent=tp3Qty, comment_profit="TP3", comment_loss="SL")
+    else
+        strategy.exit("Long TP1", from_entry="Long", limit=longTP, stop=longSL, comment_profit="TP1", comment_loss="SL")
+if strategy.position_size < 0
+    if useScaleOut
+        if tp1Qty > 0
+            strategy.exit("Short TP1", from_entry="Short", limit=shortTP1, stop=shortSL, qty_percent=tp1Qty, comment_profit="TP1", comment_loss="SL")
+        if tp2Qty > 0
+            strategy.exit("Short TP2", from_entry="Short", limit=shortTP2, stop=shortSL, qty_percent=tp2Qty, comment_profit="TP2", comment_loss="SL")
+        if tp3Qty > 0
+            strategy.exit("Short TP3", from_entry="Short", limit=shortTP3, stop=shortSL, qty_percent=tp3Qty, comment_profit="TP3", comment_loss="SL")
+    else
+        strategy.exit("Short TP1", from_entry="Short", limit=shortTP, stop=shortSL, comment_profit="TP1", comment_loss="SL")
+if not inBacktest
+    strategy.close_all()
+
+// =====================
+// 当前图表周期回测统计
+// strategy() 的订单和回测只运行在图表当前周期；下方状态表不另行回测交易。
+// =====================
+closedTrades = strategy.closedtrades
+winTrades = strategy.wintrades
+lossTrades = strategy.losstrades
+winRate = closedTrades > 0 ? winTrades * 100.0 / closedTrades : na
+profitFactor = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+netProfit = strategy.netprofit
+winRateText = closedTrades > 0 ? str.tostring(winRate, "#.##") + "%" : "无交易"
+profitFactorText = na(profitFactor) ? "无" : str.tostring(profitFactor, "#.###")
+positionText = strategy.position_size > 0 ? "持多" : strategy.position_size < 0 ? "持空" : "空仓"
+
+// 逐笔读取实际退出订单的 comment。分批止盈时，每一次 TP 或 SL 成交都会各记一次。
+var int tp1Count = 0
+var int tp2Count = 0
+var int tp3Count = 0
+var int stopLossCount = 0
+var int processedClosedTrades = 0
+if closedTrades > processedClosedTrades
+    for tradeIndex = processedClosedTrades to closedTrades - 1
+        exitComment = strategy.closedtrades.exit_comment(tradeIndex)
+        if exitComment == "TP1"
+            tp1Count += 1
+        else if exitComment == "TP2"
+            tp2Count += 1
+        else if exitComment == "TP3"
+            tp3Count += 1
+        else if exitComment == "SL"
+            stopLossCount += 1
+    processedClosedTrades := closedTrades
+
+// =====================
+// 多周期状态：在每个目标周期重算 EMA、RSI、MACD、Volume、ADX。
+// 2=强多，1=看多，0=震荡，-1=看空，-2=强空。
+// 此状态不要求突破，目的是展示趋势环境；实际开仓仍须满足上面的突破条件。
+// =====================
+f_trendStatus() =>
+    fast = ta.ema(close, emaFastLen)
+    slow = ta.ema(close, emaSlowLen)
+    rsi = ta.rsi(close, rsiLen)
+    [macd, signal, hist] = ta.macd(close, macdFast, macdSlow, macdSignalLen)
+    volMA = ta.sma(volume, volumeLen)
+    [plus, minus, adx] = ta.dmi(adxLen, adxSmooth)
+    rsiLongPass = not useRSIFilter or (rsi >= rsiLongMin and rsi <= rsiLongMax)
+    rsiShortPass = not useRSIFilter or (rsi >= rsiShortMin and rsi <= rsiShortMax)
+    macdLongPass = not useMACDFilter or macd > signal
+    macdShortPass = not useMACDFilter or macd < signal
+    volumePass = not useVolumeFilter or volume >= volMA * volumeMultiplier
+    adxPass = not useADXFilter or adx >= adxMin
+    entryLongPass = not useEntryEMAFilter or close > fast
+    entryShortPass = not useEntryEMAFilter or close < fast
+    strongLong = fast > slow and entryLongPass and rsiLongPass and macdLongPass and volumePass and adxPass
+    strongShort = fast < slow and entryShortPass and rsiShortPass and macdShortPass and volumePass and adxPass
+    weakTrend = useADXFilter and adx < adxMin
+    strongLong ? 2 : strongShort ? -2 : weakTrend ? 0 : fast > slow ? 1 : fast < slow ? -1 : 0
+
+f_statusText(status) =>
+    status == 2 ? "强多" : status == 1 ? "看多" : status == -1 ? "看空" : status == -2 ? "强空" : "震荡"
+
+f_statusColor(status) =>
+    status == 2 ? color.rgb(75, 181, 103) : status == 1 ? color.rgb(139, 204, 152) : status == -1 ? color.rgb(236, 133, 145) : status == -2 ? color.rgb(230, 80, 94) : color.rgb(125, 130, 140)
+
+// 一次 security 请求内重算全部过滤器，避免为每个指标分别请求造成调用浪费。
+status1m = request.security(syminfo.tickerid, "1", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status3m = request.security(syminfo.tickerid, "3", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status5m = request.security(syminfo.tickerid, "5", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status15m = request.security(syminfo.tickerid, "15", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status30m = request.security(syminfo.tickerid, "30", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status1h = request.security(syminfo.tickerid, "60", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status2h = request.security(syminfo.tickerid, "120", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+status4h = request.security(syminfo.tickerid, "240", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+statusD = request.security(syminfo.tickerid, "D", f_trendStatus(), barmerge.gaps_off, barmerge.lookahead_off)
+
+// =====================
+// 开单与退出标签
+// =====================
+longTargetText = useScaleOut ? "TP1: " + str.tostring(close + atrValue * tp1AtrMult, format.mintick) + "\nTP2: " + str.tostring(close + atrValue * tp2AtrMult, format.mintick) + "\nTP3: " + str.tostring(close + atrValue * tp3AtrMult, format.mintick) : "盈: " + str.tostring(close + atrValue * tpAtrMult, format.mintick)
+shortTargetText = useScaleOut ? "TP1: " + str.tostring(close - atrValue * tp1AtrMult, format.mintick) + "\nTP2: " + str.tostring(close - atrValue * tp2AtrMult, format.mintick) + "\nTP3: " + str.tostring(close - atrValue * tp3AtrMult, format.mintick) : "盈: " + str.tostring(close - atrValue * tpAtrMult, format.mintick)
+if showSignalLabel and longSignal
+    label.new(bar_index, low - atrValue * labelAtrOffset, "开多\n价: " + str.tostring(close, format.mintick) + "\n" + longTargetText + "\n损: " + str.tostring(close - atrValue * slAtrMult, format.mintick) + "\n胜率: " + winRateText + "\n" + timeText, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+if showSignalLabel and shortSignal
+    label.new(bar_index, high + atrValue * labelAtrOffset, "开空\n价: " + str.tostring(close, format.mintick) + "\n" + shortTargetText + "\n损: " + str.tostring(close + atrValue * slAtrMult, format.mintick) + "\n胜率: " + winRateText + "\n" + timeText, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+newClosedTrade = strategy.closedtrades > nz(strategy.closedtrades[1])
+if showExitLabel and newClosedTrade
+    lastTradeIndex = strategy.closedtrades - 1
+    exitPriceResult = strategy.closedtrades.exit_price(lastTradeIndex)
+    entryIdResult = strategy.closedtrades.entry_id(lastTradeIndex)
+    profitResult = strategy.closedtrades.profit(lastTradeIndex)
+    isWinResult = profitResult > 0
+    isLongResult = entryIdResult == "Long"
+    resultText = (isLongResult ? "多" : "空") + (isWinResult ? "止盈" : "止损")
+    resultColor = isWinResult ? color.green : color.red
+    resultY = isLongResult ? (isWinResult ? high + atrValue * labelAtrOffset : low - atrValue * labelAtrOffset) : (isWinResult ? low - atrValue * labelAtrOffset : high + atrValue * labelAtrOffset)
+    resultStyle = resultY >= close ? label.style_label_down : label.style_label_up
+    label.new(bar_index, resultY, resultText + "\n价: " + str.tostring(exitPriceResult, format.mintick) + "\n盈亏: " + str.tostring(profitResult, "#.##") + "\n" + timeText, style=resultStyle, color=resultColor, textcolor=color.white, size=size.small)
+
+// =====================
+// 图形
+// =====================
+plot(showBreakChannel ? upperBreakChannel : na, "突破上通道", color.new(color.green, 30), 1)
+plot(showBreakChannel ? lowerBreakChannel : na, "跌破下通道", color.new(color.red, 30), 1)
+plot(showEMA ? emaHTFFast : na, "高周期EMA9", color.blue)
+plot(showEMA ? emaHTFSlow : na, "高周期EMA21", color.orange)
+plot(showTPSLLine and strategy.position_size > 0 and not useScaleOut ? longTP : na, "多单单一止盈", color.green, 2)
+plot(showTPSLLine and strategy.position_size > 0 ? longSL : na, "多单ATR止损", color.red, 2)
+plot(showTPSLLine and strategy.position_size > 0 and useScaleOut ? longTP1 : na, "多单TP1", color.green, 2)
+plot(showTPSLLine and strategy.position_size > 0 and useScaleOut ? longTP2 : na, "多单TP2", color.teal, 2)
+plot(showTPSLLine and strategy.position_size > 0 and useScaleOut ? longTP3 : na, "多单TP3", color.blue, 2)
+plot(showTPSLLine and strategy.position_size < 0 and not useScaleOut ? shortTP : na, "空单单一止盈", color.green, 2)
+plot(showTPSLLine and strategy.position_size < 0 ? shortSL : na, "空单ATR止损", color.red, 2)
+plot(showTPSLLine and strategy.position_size < 0 and useScaleOut ? shortTP1 : na, "空单TP1", color.green, 2)
+plot(showTPSLLine and strategy.position_size < 0 and useScaleOut ? shortTP2 : na, "空单TP2", color.teal, 2)
+plot(showTPSLLine and strategy.position_size < 0 and useScaleOut ? shortTP3 : na, "空单TP3", color.blue, 2)
+plotshape(longSignal, "突破开多", shape.triangleup, location.belowbar, color.green, size=size.small, text="多")
+plotshape(shortSignal, "跌破开空", shape.triangledown, location.abovebar, color.red, size=size.small, text="空")
+
+// =====================
+// 右上角：当前图表周期回测 + 多周期状态
+// =====================
+var table statTable = table.new(position.top_right, 2, 24, border_width=1)
+f_setStatusRow(row, tf, status) =>
+    table.cell(statTable, 0, row, tf, text_color=color.white, bgcolor=color.rgb(55, 60, 72))
+    table.cell(statTable, 1, row, f_statusText(status), text_color=color.white, bgcolor=f_statusColor(status))
+
+if barstate.islast
+    if showTable
+        table.cell(statTable, 0, 0, "当前周期回测", text_color=color.white, bgcolor=color.black)
+        table.cell(statTable, 1, 0, syminfo.ticker, text_color=color.white, bgcolor=color.black)
+        table.cell(statTable, 0, 1, "图表周期")
+        table.cell(statTable, 1, 1, timeframe.period)
+        table.cell(statTable, 0, 2, "回测天数")
+        table.cell(statTable, 1, 2, str.tostring(daysBack))
+        table.cell(statTable, 0, 3, "总交易")
+        table.cell(statTable, 1, 3, str.tostring(closedTrades))
+        table.cell(statTable, 0, 4, "盈利 / 亏损")
+        table.cell(statTable, 1, 4, str.tostring(winTrades) + " / " + str.tostring(lossTrades))
+        table.cell(statTable, 0, 5, "胜率")
+        table.cell(statTable, 1, 5, winRateText)
+        table.cell(statTable, 0, 6, "盈利因子")
+        table.cell(statTable, 1, 6, profitFactorText)
+        table.cell(statTable, 0, 7, "净利润")
+        table.cell(statTable, 1, 7, str.tostring(netProfit, "#.##"))
+        table.cell(statTable, 0, 8, "当前仓位")
+        table.cell(statTable, 1, 8, positionText)
+        table.cell(statTable, 0, 9, "TP1 次数")
+        table.cell(statTable, 1, 9, str.tostring(tp1Count))
+        table.cell(statTable, 0, 10, "TP2 次数")
+        table.cell(statTable, 1, 10, str.tostring(tp2Count))
+        table.cell(statTable, 0, 11, "TP3 次数")
+        table.cell(statTable, 1, 11, str.tostring(tp3Count))
+        table.cell(statTable, 0, 12, "止损次数")
+        table.cell(statTable, 1, 12, str.tostring(stopLossCount))
+    else
+        for row = 0 to 12
+            table.cell(statTable, 0, row, "", bgcolor=color.new(color.black, 100))
+            table.cell(statTable, 1, row, "", bgcolor=color.new(color.black, 100))
+
+    if showMTFTable
+        table.cell(statTable, 0, 13, "周期", text_color=color.white, bgcolor=color.rgb(45, 85, 220))
+        table.cell(statTable, 1, 13, "趋势状态", text_color=color.white, bgcolor=color.rgb(45, 85, 220))
+        f_setStatusRow(14, "1分钟", status1m)
+        f_setStatusRow(15, "3分钟", status3m)
+        f_setStatusRow(16, "5分钟", status5m)
+        f_setStatusRow(17, "15分钟", status15m)
+        f_setStatusRow(18, "30分钟", status30m)
+        f_setStatusRow(19, "1小时", status1h)
+        f_setStatusRow(20, "2小时", status2h)
+        f_setStatusRow(21, "4小时", status4h)
+        f_setStatusRow(22, "日线", statusD)
+        table.cell(statTable, 0, 23, "说明", text_color=color.white, bgcolor=color.rgb(55, 60, 72))
+        table.cell(statTable, 1, 23, "状态非开仓信号", text_color=color.white, bgcolor=color.rgb(55, 60, 72))
+    else
+        for row = 13 to 23
+            table.cell(statTable, 0, row, "", bgcolor=color.new(color.black, 100))
+            table.cell(statTable, 1, row, "", bgcolor=color.new(color.black, 100))
+
+// =====================
+// 警报
+// =====================
+// 1）自动下单请在 TradingView Alert 的 Condition 里选择：
+//    本脚本名称 → Any alert() function call
+//    Webhook URL 填你的 ngrok 地址，例如：https://xxxx.ngrok-free.app/tradingview
+//    Message 可以随便写，真正发送的是上面 alert(longWebhookMsg / shortWebhookMsg) 的动态 JSON。
+//
+// 2）下面两个 alertcondition 仅保留用于普通文字提醒，不用于动态 JSON 自动下单。
+alertcondition(longSignal, "突破开多", "胜率优先突破开多，价格={{close}}，周期={{interval}}")
+alertcondition(shortSignal, "跌破开空", "胜率优先跌破开空，价格={{close}}，周期={{interval}}")

@@ -1,0 +1,27 @@
+{
+  "secret": "replace_with_a_long_random_secret",
+  "signal_id": "BTCUSDT-risk-pct-demo-long",
+  "symbol": "BTCUSDT",
+  "side": "buy",
+  "risk_mode": "fixed_pct",
+  "risk_pct": 0.01,
+  "margin_usdt": 50,
+  "sl": 65000,
+  "tps": [
+    {
+      "price": 68000,
+      "qty_pct": 0.5
+    },
+    {
+      "price": 70000,
+      "qty_pct": 0.3
+    },
+    {
+      "price": 72000,
+      "qty_pct": 0.2
+    }
+  ],
+  "cancel_before_open": true,
+  "working_type": "MARK_PRICE",
+  "position_policy": "replace"
+}
