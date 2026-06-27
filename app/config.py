@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     protect_journal_api: bool = Field(default=False, alias="PROTECT_JOURNAL_API")
     protect_stats_api: bool = Field(default=False, alias="PROTECT_STATS_API")
 
+    # ===== V5 Runtime control =====
+    runtime_control_enabled: bool = Field(default=False, alias="RUNTIME_CONTROL_ENABLED")
+    runtime_control_require_token: bool = Field(default=True, alias="RUNTIME_CONTROL_REQUIRE_TOKEN")
+    runtime_control_token: str = Field(default="", alias="RUNTIME_CONTROL_TOKEN")
+    runtime_status_allow_dashboard_token: bool = Field(
+        default=True, alias="RUNTIME_STATUS_ALLOW_DASHBOARD_TOKEN"
+    )
+
     @property
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}
@@ -141,6 +149,15 @@ class Settings(BaseSettings):
         if (self.protect_journal_api or self.protect_stats_api) and not self.dashboard_token.strip():
             raise RuntimeError(
                 "DASHBOARD_TOKEN is required when PROTECT_JOURNAL_API or PROTECT_STATS_API is true"
+            )
+        if (
+            self.runtime_control_enabled
+            and self.runtime_control_require_token
+            and not self.runtime_control_token.strip()
+        ):
+            raise RuntimeError(
+                "RUNTIME_CONTROL_TOKEN is required when RUNTIME_CONTROL_ENABLED=true "
+                "and RUNTIME_CONTROL_REQUIRE_TOKEN=true"
             )
 
 

@@ -23,6 +23,7 @@ from .risk import (
     validate_price_levels,
 )
 from .storage import AccountRiskStore
+from .runtime_control import RuntimeControl
 from .schemas import TradingViewSignal, normalize_side, opposite_side
 
 logger = logging.getLogger(__name__)
@@ -48,10 +49,12 @@ class Trader:
         rules: ExchangeRules,
         account_risk: AccountRiskGuard | None = None,
         account_risk_store: AccountRiskStore | None = None,
+        runtime_control: RuntimeControl | None = None,
     ):
         self.settings = settings
         self.client = client
         self.rules = rules
+        self.runtime_control = runtime_control
         if account_risk is not None:
             self.account_risk = account_risk
         else:
@@ -1319,6 +1322,21 @@ class Trader:
             self._handle_emergency_close_on_protection_fail(effective_plan, responses, protection_summary)
 
     def execute(self, signal: TradingViewSignal, signal_key: str) -> dict:
+        if self.runtime_control is not None:
+            blocked, runtime_summary = self.runtime_control.is_execution_blocked()
+            if blocked:
+                logger.warning(
+                    "Execution skipped by runtime lock: signal_key=%s summary=%s",
+                    signal_key,
+                    runtime_summary,
+                )
+                return {
+                    "orders": {},
+                    "skipped": True,
+                    "skip_reason": "runtime_locked",
+                    "runtime_summary": runtime_summary,
+                }
+
         plan = self.prepare_plan(signal)
         logger.info("Trade plan: %s", json.dumps(asdict(plan), default=str, ensure_ascii=False))
 

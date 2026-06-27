@@ -386,6 +386,7 @@ class TradeJournalStore:
                     SUM(CASE WHEN status = 'protected' THEN 1 ELSE 0 END) AS protected_count,
                     SUM(CASE WHEN status = 'entry_not_filled' THEN 1 ELSE 0 END) AS entry_not_filled_count,
                     SUM(CASE WHEN status = 'blocked_by_account_risk' THEN 1 ELSE 0 END) AS blocked_count,
+                    SUM(CASE WHEN status = 'blocked_by_runtime_lock' THEN 1 ELSE 0 END) AS runtime_lock_count,
                     SUM(CASE WHEN status = 'protection_failed' THEN 1 ELSE 0 END) AS protection_failed_count
                 FROM trade_executions
                 GROUP BY symbol
@@ -401,6 +402,7 @@ class TradeJournalStore:
                     "protected_count": int(row["protected_count"] or 0),
                     "entry_not_filled_count": int(row["entry_not_filled_count"] or 0),
                     "blocked_count": int(row["blocked_count"] or 0),
+                    "runtime_lock_count": int(row["runtime_lock_count"] or 0),
                     "protection_failed_count": int(row["protection_failed_count"] or 0),
                 }
             )
@@ -417,6 +419,7 @@ class TradeJournalStore:
                 FROM trade_executions
                 WHERE status IN (
                     'blocked_by_account_risk',
+                    'blocked_by_runtime_lock',
                     'skipped_by_position_policy',
                     'entry_not_filled',
                     'protection_failed',
@@ -436,3 +439,144 @@ class TradeJournalStore:
             }
             for row in rows
         ]
+
+
+class RuntimeControlStore:
+    def __init__(self, db_path: str):
+        self.db_path = Path(db_path)
+        self.lock = threading.Lock()
+        self._init_db()
+
+    def _connect(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    locked INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    locked_until TEXT,
+                    locked_by TEXT,
+                    locked_at TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_lock_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    reason TEXT,
+                    locked_until TEXT,
+                    actor TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_events_created ON runtime_lock_events(created_at)"
+            )
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runtime_state(id, locked, reason, locked_until, locked_by, locked_at, updated_at)
+                VALUES (1, 0, NULL, NULL, NULL, NULL, ?)
+                """,
+                (now,),
+            )
+            conn.commit()
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        return {key: row[key] for key in row.keys()}
+
+    def get_state(self) -> dict:
+        with self.lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM runtime_state WHERE id = 1").fetchone()
+        state = self._row_to_dict(row) or {}
+        return {
+            "locked": bool(state.get("locked")),
+            "reason": state.get("reason"),
+            "locked_until": state.get("locked_until"),
+            "locked_by": state.get("locked_by"),
+            "locked_at": state.get("locked_at"),
+            "updated_at": state.get("updated_at"),
+        }
+
+    def set_locked(
+        self,
+        *,
+        reason: str | None,
+        locked_until: str | None,
+        actor: str | None,
+    ) -> dict:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE runtime_state
+                SET locked = 1, reason = ?, locked_until = ?, locked_by = ?, locked_at = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (reason, locked_until, actor, now, now),
+            )
+            conn.commit()
+        return self.get_state()
+
+    def set_unlocked(self, *, actor: str | None) -> dict:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE runtime_state
+                SET locked = 0, reason = NULL, locked_until = NULL, locked_by = NULL, locked_at = NULL, updated_at = ?
+                WHERE id = 1
+                """,
+                (now,),
+            )
+            conn.commit()
+        return self.get_state()
+
+    def append_event(
+        self,
+        *,
+        action: str,
+        reason: str | None = None,
+        locked_until: str | None = None,
+        actor: str | None = None,
+    ) -> None:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime_lock_events(action, reason, locked_until, actor, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (action, reason, locked_until, actor, now),
+            )
+            conn.commit()
+
+    def list_events(self, limit: int = 50) -> list[dict]:
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, action, reason, locked_until, actor, created_at
+                FROM runtime_lock_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]

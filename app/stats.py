@@ -29,6 +29,7 @@ class TradeStatsService:
             "protected_count": protected,
             "entry_not_filled_count": totals.get("entry_not_filled", 0),
             "blocked_by_account_risk_count": totals.get("blocked_by_account_risk", 0),
+            "blocked_by_runtime_lock_count": totals.get("blocked_by_runtime_lock", 0),
             "skipped_by_position_policy_count": totals.get("skipped_by_position_policy", 0),
             "protection_failed_count": totals.get("protection_failed", 0),
             "failed_count": totals.get("failed", 0),

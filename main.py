@@ -15,11 +15,18 @@ from app.binance_client import BinanceClient
 from app.config import get_settings
 from app.exchange_rules import ExchangeRules
 from app.schemas import TradingViewSignal, normalize_side
-from app.storage import AccountRiskStore, SignalStore, TradeJournalStore
+from app.storage import AccountRiskStore, RuntimeControlStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
 from app.journal import TradeJournal
 from app.stats import TradeStatsService
 from app.dashboard import create_dashboard_router, require_api_token_if_protected
+from app.runtime_control import (
+    LockRequest,
+    RuntimeControl,
+    UnlockRequest,
+    verify_runtime_control_write_token,
+    verify_runtime_read_token,
+)
 from app.trader import Trader
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
@@ -43,10 +50,12 @@ account_risk = AccountRiskGuard(settings, client, account_risk_store)
 journal_store = TradeJournalStore(settings.sqlite_path)
 trade_journal = TradeJournal(journal_store)
 trade_stats = TradeStatsService(journal_store)
-trader = Trader(settings, client, rules, account_risk=account_risk)
+runtime_store = RuntimeControlStore(settings.sqlite_path)
+runtime_control = RuntimeControl(settings, runtime_store)
+trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
 store = SignalStore(settings.sqlite_path)
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 
@@ -395,3 +404,82 @@ async def stats_rejections(
             "拒绝统计": rows,
         }
     )
+
+
+@app.get("/runtime/status")
+async def runtime_status(
+    control_token: str | None = Query(None),
+    token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    verify_runtime_read_token(
+        settings,
+        control_token=control_token,
+        control_header=x_runtime_control_token,
+        dashboard_token=token,
+        dashboard_header=x_dashboard_token,
+    )
+    return JSONResponse(content={"成功": True, "运行状态": runtime_control.status_payload()})
+
+
+@app.get("/runtime/events")
+async def runtime_events(
+    limit: int = 50,
+    control_token: str | None = Query(None),
+    token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    verify_runtime_read_token(
+        settings,
+        control_token=control_token,
+        control_header=x_runtime_control_token,
+        dashboard_token=token,
+        dashboard_header=x_dashboard_token,
+    )
+    rows = runtime_control.list_events(limit=limit)
+    return JSONResponse(content={"成功": True, "数量": len(rows), "事件": rows})
+
+
+@app.post("/runtime/lock")
+async def runtime_lock(
+    body: LockRequest,
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    try:
+        summary = runtime_control.lock(
+            reason=body.reason.strip() or "manual lock",
+            locked_until=body.locked_until,
+            operator=body.operator,
+            actor=body.actor,
+            locked_by=body.locked_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return JSONResponse(content={"成功": True, "已锁定": True, "运行状态": summary})
+
+
+@app.post("/runtime/unlock")
+async def runtime_unlock(
+    body: UnlockRequest = UnlockRequest(),
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    summary = runtime_control.unlock(
+        operator=body.operator,
+        actor=body.actor,
+        locked_by=body.locked_by,
+    )
+    return JSONResponse(content={"成功": True, "已锁定": False, "运行状态": summary})

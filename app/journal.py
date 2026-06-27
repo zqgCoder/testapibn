@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class ExecutionStatus:
     BLOCKED_BY_ACCOUNT_RISK = "blocked_by_account_risk"
+    BLOCKED_BY_RUNTIME_LOCK = "blocked_by_runtime_lock"
     SKIPPED_BY_POSITION_POLICY = "skipped_by_position_policy"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
@@ -29,6 +30,7 @@ ACCOUNT_RISK_SKIP_REASONS = {
 
 STATUS_LABELS_ZH = {
     ExecutionStatus.BLOCKED_BY_ACCOUNT_RISK: "账户风控拒绝",
+    ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK: "运行锁定拒绝",
     ExecutionStatus.SKIPPED_BY_POSITION_POLICY: "持仓策略跳过",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
@@ -50,6 +52,8 @@ def _filled_qty_from_result(result: dict) -> Decimal:
 
 def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
+    if skip_reason == "runtime_locked":
+        return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
     if skip_reason in ACCOUNT_RISK_SKIP_REASONS:
         return ExecutionStatus.BLOCKED_BY_ACCOUNT_RISK
     if skip_reason == "same_side_position_exists":
@@ -212,7 +216,10 @@ class TradeJournal:
             plan = result.get("effective_plan") or result.get("plan") or {}
             entry_summary = result.get("entry_summary") or {}
             protection_summary = result.get("protection_summary") or {}
-            account_risk_summary = result.get("account_risk_summary") or {}
+            account_risk_summary = result.get("account_risk_summary")
+            account_risk_allowed = None
+            if account_risk_summary is not None:
+                account_risk_allowed = 1 if account_risk_summary.get("allowed", True) else 0
 
             status = resolve_execution_status(result)
             execution_id = self.store.insert_execution(
@@ -234,10 +241,12 @@ class TradeJournal:
                     "target_risk_usdt": _decimal_str(plan.get("target_risk_usdt")),
                     "estimated_total_loss_at_sl": _decimal_str(plan.get("estimated_total_loss_at_sl")),
                     "leverage": plan.get("leverage"),
-                    "account_risk_allowed": 1 if account_risk_summary.get("allowed", True) else 0,
-                    "account_risk_skip_reason": account_risk_summary.get("skip_reason"),
+                    "account_risk_allowed": account_risk_allowed,
+                    "account_risk_skip_reason": (
+                        account_risk_summary.get("skip_reason") if account_risk_summary else None
+                    ),
                     "raw_signal_json": journal_json_dumps(raw_payload),
-                    "plan_json": journal_json_dumps(plan),
+                    "plan_json": journal_json_dumps(plan) if plan else None,
                     "account_risk_json": journal_json_dumps(account_risk_summary) if account_risk_summary else None,
                     "entry_summary_json": journal_json_dumps(entry_summary) if entry_summary else None,
                     "protection_summary_json": journal_json_dumps(protection_summary) if protection_summary else None,
