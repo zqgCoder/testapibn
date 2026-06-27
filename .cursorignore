@@ -1,0 +1,6 @@
+.env
+signals.db
+logs/
+*.log
+__pycache__/
+.venv/
