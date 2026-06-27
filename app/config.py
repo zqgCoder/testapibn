@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     account_risk_no_sl_penalty_pct: float = Field(default=0.02, alias="ACCOUNT_RISK_NO_SL_PENALTY_PCT")
     account_risk_day_timezone: str = Field(default="UTC", alias="ACCOUNT_RISK_DAY_TIMEZONE")
 
+    # ===== V5 Dashboard (read-only) =====
+    dashboard_enabled: bool = Field(default=False, alias="DASHBOARD_ENABLED")
+    dashboard_require_token: bool = Field(default=True, alias="DASHBOARD_REQUIRE_TOKEN")
+    dashboard_token: str = Field(default="", alias="DASHBOARD_TOKEN")
+    dashboard_auto_refresh_sec: int = Field(default=10, alias="DASHBOARD_AUTO_REFRESH_SEC")
+
     @property
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}
@@ -120,6 +126,16 @@ class Settings(BaseSettings):
             raise RuntimeError("MAX_TOTAL_RISK_USDT must be >= 0")
         if self.account_risk_no_sl_penalty_pct < 0:
             raise RuntimeError("ACCOUNT_RISK_NO_SL_PENALTY_PCT must be >= 0")
+        if self.dashboard_auto_refresh_sec < 0 or self.dashboard_auto_refresh_sec > 3600:
+            raise RuntimeError("DASHBOARD_AUTO_REFRESH_SEC must be between 0 and 3600")
+        if (
+            self.dashboard_enabled
+            and self.dashboard_require_token
+            and not self.dashboard_token.strip()
+        ):
+            raise RuntimeError(
+                "DASHBOARD_TOKEN is required when DASHBOARD_ENABLED=true and DASHBOARD_REQUIRE_TOKEN=true"
+            )
 
 
 @lru_cache(maxsize=1)

@@ -19,6 +19,7 @@ from app.storage import AccountRiskStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
 from app.journal import TradeJournal
 from app.stats import TradeStatsService
+from app.dashboard import create_dashboard_router
 from app.trader import Trader
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
@@ -45,7 +46,9 @@ trade_stats = TradeStatsService(journal_store)
 trader = Trader(settings, client, rules, account_risk=account_risk)
 store = SignalStore(settings.sqlite_path)
 
-app = FastAPI(title="TradingView to Binance Futures Bot", version="1.4.0")
+app = FastAPI(title="TradingView to Binance Futures Bot", version="1.5.0")
+
+app.include_router(create_dashboard_router(settings, journal_store, trade_stats))
 
 
 @app.exception_handler(RequestValidationError)

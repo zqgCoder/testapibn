@@ -314,3 +314,47 @@ DEFAULT_POSITION_POLICY=replace
 
 推荐保持 `replace`，这样 TradingView 出现反向信号时，机器人会先清理旧 TP/SL，再平掉旧仓，然后开新方向仓位并挂新的止损止盈。
 
+## 只读 Dashboard（v5 Phase 3）
+
+浏览器查看交易日志与统计，**不能下单、平仓或改配置**。
+
+### 配置
+
+在 `.env` 中设置：
+
+```env
+DASHBOARD_ENABLED=true
+DASHBOARD_REQUIRE_TOKEN=true
+DASHBOARD_TOKEN=你自己生成的长随机字符串
+DASHBOARD_AUTO_REFRESH_SEC=10
+```
+
+- `DASHBOARD_ENABLED=false` 时，Dashboard 页面与 API 返回 404。
+- `DASHBOARD_REQUIRE_TOKEN=true` 时，必须携带正确 Token 才能访问。
+- `DASHBOARD_AUTO_REFRESH_SEC=0` 关闭页面自动刷新。
+
+### 访问
+
+启动服务后，在浏览器打开：
+
+```text
+http://127.0.0.1:8000/dashboard?token=你的DASHBOARD_TOKEN
+```
+
+页面会从 URL 读取 token 并存入内存，后续 `fetch` 自动带上请求头 `X-Dashboard-Token`。不使用 localStorage，也不在页面上显示 token 明文。
+
+### Dashboard API
+
+```text
+GET /dashboard/api/summary
+GET /dashboard/api/by-symbol
+GET /dashboard/api/rejections
+GET /dashboard/api/executions?limit=50&symbol=BTCUSDT&status=protected
+GET /dashboard/api/executions/{execution_id}
+GET /dashboard/api/orders/{execution_id}
+```
+
+Token 可通过请求头 `X-Dashboard-Token` 或 query 参数 `?token=` 传递。
+
+原有的 `/journal/*` 与 `/stats/*` 接口保持不变，不受 Dashboard 开关影响。
+
