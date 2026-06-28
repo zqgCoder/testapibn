@@ -1317,46 +1317,82 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
   <title>Trade Journal Dashboard</title>
   <style>
     :root {{
-      --bg: #0f1419;
-      --panel: #151b23;
-      --border: #2a3441;
-      --text: #e7ecf3;
-      --muted: #9aa7b8;
+      --bg: #0b1016;
+      --panel: #121820;
+      --panel-2: #171f2a;
+      --border: #263041;
+      --text: #e8edf4;
+      --muted: #8b98a8;
       --accent: #3b82f6;
+      --info: #60a5fa;
       --ok: #22c55e;
+      --ok-bg: rgba(34, 197, 94, 0.12);
       --warn: #f59e0b;
+      --warn-bg: rgba(245, 158, 11, 0.12);
       --bad: #ef4444;
+      --bad-bg: rgba(239, 68, 68, 0.12);
+      --info-bg: rgba(96, 165, 250, 0.12);
+      --dash-scroll-offset: 192px;
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-      background: var(--bg); color: var(--text); line-height: 1.45;
+      background: var(--bg); color: var(--text); line-height: 1.5;
     }}
     header {{
-      padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
-      display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between;
-      background: var(--panel); position: sticky; top: 0; z-index: 10;
+      padding: 0.85rem 1.25rem 0; border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #151c26 0%, var(--panel) 100%);
+      position: sticky; top: 0; z-index: 20;
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
     }}
-    header h1 {{ margin: 0; font-size: 1.1rem; font-weight: 600; }}
-    .badge {{ font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); padding: 0.15rem 0.5rem; border-radius: 999px; }}
-    main {{ padding: 1rem 1.25rem 2rem; max-width: 1400px; margin: 0 auto; }}
+    header.is-scrolled {{
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.38);
+      border-bottom-color: #2f3b4d;
+    }}
+    html {{ scroll-behavior: smooth; scroll-padding-top: var(--dash-scroll-offset); }}
+    .header-row {{
+      display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between;
+    }}
+    header h1 {{ margin: 0; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; }}
+    .header-sub {{ display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; margin-top: 0.35rem; }}
+    .badge {{
+      font-size: 0.72rem; color: var(--muted); border: 1px solid var(--border);
+      padding: 0.18rem 0.55rem; border-radius: 999px; background: var(--panel-2);
+    }}
+    .badge.readonly {{ color: #93c5fd; border-color: rgba(96,165,250,0.35); background: var(--info-bg); }}
+    .status-bar {{
+      display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }}
+    .status-pill {{
+      display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.35rem 0.65rem;
+      border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); font-size: 0.78rem;
+    }}
+    .status-pill .label {{ color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; }}
+    main {{ padding: 1rem 1.25rem 2.5rem; max-width: 1440px; width: 100%; margin: 0 auto; }}
     .cards {{
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.65rem; margin-bottom: 1rem;
     }}
     .card {{
-      background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.85rem 1rem;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem 0.85rem;
     }}
-    .card .label {{ font-size: 0.75rem; color: var(--muted); margin-bottom: 0.25rem; }}
-    .card .value {{ font-size: 1.35rem; font-weight: 700; }}
+    .card .label {{ font-size: 0.72rem; color: var(--muted); margin-bottom: 0.2rem; }}
+    .card .value {{ font-size: 1.25rem; font-weight: 700; line-height: 1.2; }}
+    .card.highlight-ok {{ border-color: rgba(34,197,94,0.35); }}
+    .card.highlight-warn {{ border-color: rgba(245,158,11,0.35); }}
+    .card.highlight-error {{ border-color: rgba(239,68,68,0.35); }}
     section {{
-      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-      padding: 1rem; margin-bottom: 1rem;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1rem 1.05rem; margin-bottom: 1rem;
     }}
-    section h2 {{ margin: 0 0 0.75rem; font-size: 1rem; }}
+    section h2 {{
+      margin: 0 0 0.35rem; font-size: 1rem; font-weight: 700;
+      display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+    }}
     .toolbar {{
       display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin-bottom: 0.75rem;
     }}
-    label {{ display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.75rem; color: var(--muted); }}
+    label {{ display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.72rem; color: var(--muted); }}
     input, select, button {{
       background: #0b1016; color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; padding: 0.45rem 0.6rem; font: inherit;
@@ -1366,17 +1402,38 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     }}
     button.secondary {{ background: transparent; color: var(--text); border-color: var(--border); }}
     button:disabled {{ opacity: 0.55; cursor: not-allowed; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-    th, td {{ border-bottom: 1px solid var(--border); padding: 0.45rem 0.35rem; text-align: left; vertical-align: top; }}
-    th {{ color: var(--muted); font-weight: 600; white-space: nowrap; }}
-    .status {{ display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; border: 1px solid var(--border); }}
-    .status.protected {{ color: var(--ok); border-color: #14532d; }}
-    .status.failed, .status.protection_failed {{ color: var(--bad); border-color: #7f1d1d; }}
-    .status.blocked_by_account_risk, .status.skipped_by_position_policy {{ color: var(--warn); border-color: #78350f; }}
-    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; word-break: break-all; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.84rem; }}
+    th, td {{ border-bottom: 1px solid var(--border); padding: 0.5rem 0.55rem; text-align: left; vertical-align: top; }}
+    th {{ color: var(--muted); font-weight: 600; white-space: nowrap; background: var(--panel-2); font-size: 0.72rem; }}
+    tbody tr:last-child td {{ border-bottom: none; }}
+    tbody tr:hover {{ background: rgba(255,255,255,0.02); }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; }}
+    .mono-wrap {{ word-break: break-all; }}
+    .tech-field {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }}
+    td.col-tech {{ max-width: 10.5rem; }}
+    td.col-tech-wide {{ max-width: 15rem; }}
+    td.col-tech .tech-field, td.col-tech-wide .tech-field {{ display: block; max-width: 100%; }}
+    td.col-status .lvl-badge {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      max-width: 10.5rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }}
     .error-banner {{
-      background: #2a1215; border: 1px solid #7f1d1d; color: #fecaca; padding: 0.65rem 0.85rem;
-      border-radius: 8px; margin-bottom: 1rem; display: none;
+      background: var(--bad-bg); border: 1px solid rgba(239,68,68,0.45); color: #fecaca;
+      padding: 0.65rem 0.85rem; border-radius: 10px; margin-bottom: 1rem; display: none;
     }}
     .grid-2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }}
     @media (max-width: 900px) {{ .grid-2 {{ grid-template-columns: 1fr; }} }}
@@ -1393,36 +1450,151 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       margin: 0 0 0.75rem; padding: 0.75rem; background: #0b1016; border: 1px solid var(--border);
       border-radius: 8px; overflow: auto; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word;
     }}
-    .detail-meta {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem; margin-bottom: 0.75rem; }}
-    .detail-meta div {{ font-size: 0.82rem; }}
-    .detail-meta span {{ color: var(--muted); display: block; font-size: 0.72rem; }}
+    .detail-meta {{
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0.55rem; margin-bottom: 0.75rem;
+    }}
+    .detail-meta div, .kv-item {{
+      font-size: 0.82rem; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.45rem 0.55rem;
+    }}
+    .detail-meta span, .kv-item .kv-label {{ color: var(--muted); display: block; font-size: 0.68rem; margin-bottom: 0.15rem; }}
     .empty {{ color: var(--muted); font-size: 0.85rem; padding: 0.5rem 0; }}
-    .section-note {{ margin: -0.35rem 0 0.75rem; font-size: 0.75rem; color: var(--muted); }}
-    .subsection-title {{ margin: 1rem 0 0.5rem; font-size: 0.9rem; font-weight: 600; }}
-    .lock-badge {{ display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; }}
-    .lock-badge.locked {{ color: var(--warn); border: 1px solid #78350f; }}
-    .lock-badge.unlocked {{ color: var(--ok); border: 1px solid #14532d; }}
-    .health-level {{ font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; }}
-    .health-level.ok {{ color: var(--ok); }}
-    .health-level.warn {{ color: var(--warn); }}
-    .health-level.error {{ color: var(--bad); }}
-    .check-level {{ display: inline-block; min-width: 3.2rem; font-size: 0.72rem; font-weight: 600; }}
-    .check-level.ok {{ color: var(--ok); }}
-    .check-level.warn {{ color: var(--warn); }}
-    .check-level.error {{ color: var(--bad); }}
+    .section-note {{ margin: 0 0 0.85rem; font-size: 0.75rem; color: var(--muted); }}
+    .subsection-title {{ margin: 1rem 0 0.5rem; font-size: 0.88rem; font-weight: 600; color: var(--muted); }}
+    .lvl-badge {{
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 3rem; padding: 0.12rem 0.5rem; border-radius: 999px;
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; border: 1px solid transparent;
+    }}
+    .lvl-badge.ok {{ color: #4ade80; background: var(--ok-bg); border-color: rgba(34,197,94,0.35); }}
+    .lvl-badge.warn {{ color: #fbbf24; background: var(--warn-bg); border-color: rgba(245,158,11,0.35); }}
+    .lvl-badge.error {{ color: #f87171; background: var(--bad-bg); border-color: rgba(239,68,68,0.35); }}
+    .lvl-badge.info {{ color: #93c5fd; background: var(--info-bg); border-color: rgba(96,165,250,0.35); }}
+    .section-level {{
+      font-size: 0.95rem; font-weight: 700; margin-bottom: 0.85rem; padding: 0.55rem 0.75rem;
+      border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2);
+      display: flex; align-items: center; gap: 0.5rem;
+    }}
+    .section-level.ok {{ border-color: rgba(34,197,94,0.35); color: #86efac; }}
+    .section-level.warn {{ border-color: rgba(245,158,11,0.35); color: #fcd34d; }}
+    .section-level.error {{ border-color: rgba(239,68,68,0.35); color: #fca5a5; }}
+    .overview-cards {{
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.55rem; margin-bottom: 0.85rem;
+    }}
+    .overview-card {{
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.65rem;
+    }}
+    .overview-card .k {{ font-size: 0.68rem; color: var(--muted); }}
+    .overview-card .v {{ font-size: 0.92rem; font-weight: 600; margin-top: 0.15rem; }}
+    .overview-card .v .tech-field {{ max-width: 100%; font-weight: 600; }}
+    .kv-item .tech-field {{ max-width: min(100%, 22rem); }}
+    .check-grid {{
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.55rem;
+    }}
+    .check-card {{
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.65rem 0.75rem; border-left: 3px solid var(--border);
+    }}
+    .check-card.ok {{ border-left-color: var(--ok); }}
+    .check-card.warn {{ border-left-color: var(--warn); }}
+    .check-card.error {{ border-left-color: var(--bad); }}
+    .check-card.info {{ border-left-color: var(--info); }}
+    .check-card .check-name {{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.75rem; color: var(--muted); }}
+    .check-card .check-msg {{ font-size: 0.82rem; margin-top: 0.35rem; line-height: 1.45; }}
+    .check-card .check-head {{ display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }}
+    .alert-row-error {{ background: rgba(239,68,68,0.06); }}
+    .alert-row-warn {{ background: rgba(245,158,11,0.05); }}
+    .alert-row-info {{ background: rgba(96,165,250,0.05); }}
+    .journal-row-fail td {{ background: rgba(239,68,68,0.04); }}
+    .journal-row-warn td {{ background: rgba(245,158,11,0.04); }}
+    .journal-row-ok td {{ background: rgba(34,197,94,0.03); }}
+    .signal-id {{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.76rem; color: #cbd5e1; }}
+    .dash-nav {{
+      display: flex; flex-wrap: nowrap; gap: 0.35rem; overflow-x: auto;
+      padding: 0.55rem 0 0.7rem; margin-top: 0.55rem;
+      border-top: 1px solid var(--border);
+      -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }}
+    header.is-scrolled .dash-nav {{
+      border-bottom: 1px solid rgba(38, 48, 65, 0.95);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+      margin-left: -1.25rem; margin-right: -1.25rem;
+      padding-left: 1.25rem; padding-right: 1.25rem;
+    }}
+    .dash-nav::-webkit-scrollbar {{ height: 4px; }}
+    .dash-nav::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 4px; }}
+    .dash-nav-item {{
+      flex: 0 0 auto; display: inline-flex; align-items: center;
+      padding: 0.38rem 0.72rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
+      color: var(--muted); text-decoration: none; border: 1px solid var(--border);
+      background: var(--panel-2); cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }}
+    .dash-nav-item:hover {{ color: var(--text); border-color: #3b4a61; }}
+    .dash-nav-item.active {{
+      color: #fff; background: var(--accent); border-color: var(--accent);
+    }}
+    .dash-section {{
+      scroll-margin-top: var(--dash-scroll-offset);
+      margin-bottom: 1rem;
+    }}
+    .section-head {{
+      display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap;
+      margin-bottom: 0.25rem;
+    }}
+    .section-head h2 {{ margin: 0; font-size: 1rem; font-weight: 700; }}
+    .section-badge:empty {{ display: none; }}
+    .back-to-top {{
+      position: fixed; right: 1.1rem; bottom: 1.1rem; z-index: 15;
+      width: 2.5rem; height: 2.5rem; border-radius: 999px;
+      background: var(--panel); border: 1px solid var(--border); color: var(--text);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.35); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; line-height: 1; opacity: 0; pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s, background 0.15s;
+    }}
+    .back-to-top.visible {{ opacity: 1; pointer-events: auto; }}
+    .back-to-top:hover {{ background: var(--panel-2); transform: translateY(-2px); }}
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Trade Journal Dashboard</h1>
-      <div class="badge">只读 · 无下单能力</div>
+    <div class="header-row">
+      <div>
+        <h1>Trade Journal Dashboard</h1>
+        <div class="header-sub">
+          <span class="badge readonly">只读 · 无下单能力</span>
+          <span class="badge" id="refreshHint">自动刷新: {refresh}s</span>
+        </div>
+      </div>
     </div>
-    <div class="badge" id="refreshHint">自动刷新: {refresh}s</div>
+    <div class="status-bar" id="topStatusBar">
+      <div class="status-pill"><span class="label">Runtime Lock</span><span id="sbRuntime">加载中...</span></div>
+      <div class="status-pill"><span class="label">Binance</span><span id="sbBinance">加载中...</span></div>
+      <div class="status-pill"><span class="label">TradingView</span><span id="sbTradingView">加载中...</span></div>
+    </div>
+    <nav class="dash-nav" id="dashNav" aria-label="Dashboard 区块导航">
+      <a class="dash-nav-item active" href="#overview" data-section="overview">概览</a>
+      <a class="dash-nav-item" href="#health" data-section="health">系统健康</a>
+      <a class="dash-nav-item" href="#alerts" data-section="alerts">告警中心</a>
+      <a class="dash-nav-item" href="#risk-config" data-section="risk-config">风控配置</a>
+      <a class="dash-nav-item" href="#tv-sandbox" data-section="tv-sandbox">TradingView 沙盒</a>
+      <a class="dash-nav-item" href="#tv-readiness" data-section="tv-readiness">TV 接入准备</a>
+      <a class="dash-nav-item" href="#tv-observation" data-section="tv-observation">TV 连续观察</a>
+      <a class="dash-nav-item" href="#runtime-control" data-section="runtime-control">运行控制</a>
+      <a class="dash-nav-item" href="#journal" data-section="journal">最近执行</a>
+    </nav>
   </header>
   <main>
     <div id="errorBanner" class="error-banner"></div>
 
+    <section id="overview" class="dash-section">
+      <div class="section-head">
+        <h2>概览</h2>
+        <span class="section-badge" id="badge-overview"></span>
+      </div>
+      <p class="section-note">执行统计摘要 · 只读</p>
     <div class="cards" id="summaryCards">
       <div class="card"><div class="label">总执行数</div><div class="value" data-k="total_executions">-</div></div>
       <div class="card"><div class="label">保护成功</div><div class="value" data-k="protected_count">-</div></div>
@@ -1434,57 +1606,79 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <div class="card"><div class="label">今日执行</div><div class="value" data-k="today_executions">-</div></div>
       <div class="card"><div class="label">今日保护成功</div><div class="value" data-k="today_protected">-</div></div>
     </div>
+    </section>
 
-    <section>
-      <h2>系统健康摘要</h2>
+    <section id="health" class="dash-section">
+      <div class="section-head">
+        <h2>系统健康摘要</h2>
+        <span class="section-badge" id="badge-health"></span>
+      </div>
       <p class="section-note">只读监控 · 不会自动下单、平仓、撤单或解锁</p>
       <div id="healthOverviewWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>告警中心</h2>
+    <section id="alerts" class="dash-section">
+      <div class="section-head">
+        <h2>告警中心</h2>
+        <span class="section-badge" id="badge-alerts"></span>
+      </div>
       <p class="section-note">只读聚合 · 不会自动交易、撤单、平仓或解锁</p>
       <div id="alertCenterWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>风控配置体检</h2>
+    <section id="risk-config" class="dash-section">
+      <div class="section-head">
+        <h2>风控配置体检</h2>
+        <span class="section-badge" id="badge-risk-config"></span>
+      </div>
       <p class="section-note">只读检查 · 不会修改 .env 或任何配置</p>
       <div id="riskConfigWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>TradingView 沙盒</h2>
+    <section id="tv-sandbox" class="dash-section">
+      <div class="section-head">
+        <h2>TradingView 沙盒</h2>
+        <span class="section-badge" id="badge-tv-sandbox"></span>
+      </div>
       <p class="section-note">只读展示 · 仅允许 demo/testnet 接入演练</p>
       <div id="tvSandboxWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>TradingView 接入准备</h2>
+    <section id="tv-readiness" class="dash-section">
+      <div class="section-head">
+        <h2>TradingView 接入准备</h2>
+        <span class="section-badge" id="badge-tv-readiness"></span>
+      </div>
       <p class="section-note">只读检查 · demo/testnet 接入前清单</p>
       <div id="tvAlertReadinessWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>TradingView 连续观察</h2>
+    <section id="tv-observation" class="dash-section">
+      <div class="section-head">
+        <h2>TradingView 连续观察</h2>
+        <span class="section-badge" id="badge-tv-observation"></span>
+      </div>
       <p class="section-note">只读统计 · 最近窗口内 TV 信号运行状态</p>
       <div id="tvObservationWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>运行控制</h2>
+    <section id="runtime-control" class="dash-section">
+      <div class="section-head">
+        <h2>运行控制</h2>
+        <span class="section-badge" id="badge-runtime-control"></span>
+      </div>
       <p class="section-note">只读展示 · 不支持锁定/解锁操作</p>
       <div id="runtimeControlStatus" class="detail-meta">
         <div class="empty">加载中...</div>
@@ -1496,27 +1690,30 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     </section>
 
     <section>
-      <h2>运行状态</h2>
+      <div class="section-head"><h2>运行状态</h2></div>
       <div class="detail-meta" id="runtimeMeta"></div>
       <div class="detail-meta" id="healthMeta" style="margin-top:0.5rem"></div>
     </section>
 
     <section>
-      <h2>当前持仓</h2>
+      <div class="section-head"><h2>当前持仓</h2></div>
       <div style="overflow-x:auto" id="positionsWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
     <section>
-      <h2>当前条件单</h2>
+      <div class="section-head"><h2>当前条件单</h2></div>
       <div style="overflow-x:auto" id="algoOrdersWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
 
-    <section>
-      <h2>最近执行记录</h2>
+    <section id="journal" class="dash-section">
+      <div class="section-head">
+        <h2>最近执行记录</h2>
+        <span class="section-badge" id="badge-journal"></span>
+      </div>
       <div class="toolbar">
         <label>交易对<input id="filterSymbol" placeholder="BTCUSDT" /></label>
         <label>状态
@@ -1525,6 +1722,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
             <option value="protected">protected</option>
             <option value="entry_not_filled">entry_not_filled</option>
             <option value="blocked_by_account_risk">blocked_by_account_risk</option>
+            <option value="blocked_by_runtime_lock">blocked_by_runtime_lock</option>
+            <option value="tv_sandbox_rejected">tv_sandbox_rejected</option>
             <option value="skipped_by_position_policy">skipped_by_position_policy</option>
             <option value="protection_failed">protection_failed</option>
             <option value="failed">failed</option>
@@ -1533,15 +1732,16 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         <label>条数<input id="filterLimit" type="number" min="1" max="500" value="50" /></label>
         <button id="refreshBtn" type="button">刷新</button>
       </div>
-      <div style="overflow-x:auto">
+      <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>编号</th><th>创建时间</th><th>交易对</th><th>方向</th><th>状态</th><th>状态说明</th>
-              <th>跳过原因</th><th>计划数量</th><th>成交数量</th><th>进场价</th><th>杠杆</th><th>信号编号</th><th></th>
+              <th>跳过原因</th><th>计划数量</th><th>成交数量</th><th>进场价</th><th>杠杆</th>
+              <th>signal_id</th><th>信号编号</th><th></th>
             </tr>
           </thead>
-          <tbody id="executionsBody"><tr><td colspan="13" class="empty">加载中...</td></tr></tbody>
+          <tbody id="executionsBody"><tr><td colspan="14" class="empty">加载中...</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -1594,6 +1794,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     </div>
   </div>
 
+  <button type="button" class="back-to-top" id="backToTop" title="返回顶部" aria-label="返回顶部">↑</button>
+
   <script>
     const AUTO_REFRESH_SEC = {refresh};
     let dashboardToken = null;
@@ -1638,6 +1840,209 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         .replace(/"/g, "&quot;");
     }}
 
+    function techField(value) {{
+      const raw = value === null || value === undefined || value === "" ? "-" : String(value);
+      const safe = esc(raw);
+      return `<span class="tech-field" title="${{safe}}">${{safe}}</span>`;
+    }}
+
+    function normLevel(level) {{
+      const s = String(level || "OK").toUpperCase();
+      if (s === "ERROR") return "error";
+      if (s === "WARN") return "warn";
+      if (s === "INFO") return "info";
+      return "ok";
+    }}
+
+    function lvlBadge(level, text) {{
+      const cls = normLevel(level);
+      const label = text || String(level || "OK").toUpperCase();
+      return `<span class="lvl-badge ${{cls}}" title="${{esc(label)}}">${{esc(label)}}</span>`;
+    }}
+
+    function statusBadgeForJournal(status) {{
+      const s = String(status || "");
+      if (s === "protected") return lvlBadge("OK", s);
+      if (s === "failed" || s === "protection_failed") return lvlBadge("ERROR", s);
+      if (s.startsWith("blocked_") || s === "tv_sandbox_rejected" || s === "entry_not_filled" || s === "skipped_by_position_policy") {{
+        return lvlBadge("WARN", s);
+      }}
+      return lvlBadge("INFO", s || "-");
+    }}
+
+    function journalRowClass(status) {{
+      const s = String(status || "");
+      if (s === "protected") return "journal-row-ok";
+      if (s === "failed" || s === "protection_failed") return "journal-row-fail";
+      if (s) return "journal-row-warn";
+      return "";
+    }}
+
+    function renderCheckGrid(checks) {{
+      if (!checks || !checks.length) return '<div class="empty">无检查项</div>';
+      return `<div class="check-grid">${{checks.map((c) => {{
+        const cls = normLevel(c.level);
+        return `<div class="check-card ${{cls}}">
+          <div class="check-head">
+            <span class="check-name">${{esc(c.name)}}</span>
+            ${{lvlBadge(c.level)}}
+          </div>
+          <div class="check-msg">${{esc(c.message)}}</div>
+        </div>`;
+      }}).join("")}}</div>`;
+    }}
+
+    function renderOverviewCards(items) {{
+      return `<div class="overview-cards">${{items.map((entry) => {{
+        const k = entry[0];
+        const v = entry[1];
+        const useTech = entry[2];
+        const valHtml = useTech ? techField(v) : esc(v);
+        return `<div class="overview-card"><div class="k">${{esc(k)}}</div><div class="v">${{valHtml}}</div></div>`;
+      }}).join("")}}</div>`;
+    }}
+
+    function renderKvGrid(items) {{
+      const techKey = /signal_id|reason|status|symbol|prefix|action|skip|path|method|endpoint/i;
+      return `<div class="detail-meta">${{items.map(([k, v]) => {{
+        const raw = v === null || v === undefined || v === "" ? "-" : String(v);
+        const valHtml = techKey.test(k) ? techField(raw) : esc(raw);
+        return `<div class="kv-item"><span class="kv-label">${{esc(k)}}</span>${{valHtml}}</div>`;
+      }}).join("")}}</div>`;
+    }}
+
+    const statusBarState = {{ runtime: null, health: null, tv: null, binanceUrl: null }};
+    const NAV_SECTION_IDS = [
+      "overview", "health", "alerts", "risk-config", "tv-sandbox",
+      "tv-readiness", "tv-observation", "runtime-control", "journal",
+    ];
+    let navClickLockUntil = 0;
+    let scrollUiReady = false;
+
+    function setSectionBadge(sectionKey, level, text) {{
+      const el = document.getElementById("badge-" + sectionKey);
+      if (!el) return;
+      if (!level) {{
+        el.innerHTML = "";
+        return;
+      }}
+      el.innerHTML = lvlBadge(level, text || String(level).toUpperCase());
+    }}
+
+    function getSectionScrollOffset() {{
+      const raw = getComputedStyle(document.documentElement).getPropertyValue("--dash-scroll-offset").trim();
+      const parsed = parseInt(raw, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 192;
+    }}
+
+    function getStickyHeaderOffset() {{
+      const header = document.querySelector("header");
+      return header ? header.offsetHeight + 12 : getSectionScrollOffset();
+    }}
+
+    function scrollToSection(id) {{
+      const target = document.getElementById(id);
+      if (!target) return;
+      const offset = getSectionScrollOffset();
+      const top = target.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({{ top: Math.max(0, top), behavior: "smooth" }});
+    }}
+
+    function resolveActiveSectionId() {{
+      if (window.scrollY < 36) return "overview";
+      const scrollLine = window.scrollY + getStickyHeaderOffset();
+      let activeId = NAV_SECTION_IDS[0];
+      for (const id of NAV_SECTION_IDS) {{
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top + window.scrollY;
+        if (top <= scrollLine) activeId = id;
+      }}
+      return activeId;
+    }}
+
+    function highlightNavSection(sectionId) {{
+      document.querySelectorAll(".dash-nav-item").forEach((item) => {{
+        item.classList.toggle("active", item.dataset.section === sectionId);
+      }});
+    }}
+
+    function onDashboardScroll() {{
+      const header = document.querySelector("header");
+      if (header) header.classList.toggle("is-scrolled", window.scrollY > 12);
+      const backBtn = document.getElementById("backToTop");
+      if (backBtn) backBtn.classList.toggle("visible", window.scrollY > 420);
+      if (Date.now() >= navClickLockUntil) {{
+        highlightNavSection(resolveActiveSectionId());
+      }}
+    }}
+
+    function setupSectionNav() {{
+      highlightNavSection("overview");
+      document.querySelectorAll(".dash-nav-item").forEach((item) => {{
+        item.addEventListener("click", (ev) => {{
+          ev.preventDefault();
+          const id = item.dataset.section;
+          navClickLockUntil = Date.now() + 900;
+          highlightNavSection(id);
+          scrollToSection(id);
+        }});
+      }});
+    }}
+
+    function setupScrollUi() {{
+      if (scrollUiReady) return;
+      scrollUiReady = true;
+      window.addEventListener("scroll", onDashboardScroll, {{ passive: true }});
+      onDashboardScroll();
+    }}
+
+    function setupBackToTop() {{
+      const btn = document.getElementById("backToTop");
+      if (!btn) return;
+      btn.addEventListener("click", () => {{
+        navClickLockUntil = Date.now() + 900;
+        highlightNavSection("overview");
+        window.scrollTo({{ top: 0, behavior: "smooth" }});
+      }});
+    }}
+
+    function updateStatusBar() {{
+      const rtEl = document.getElementById("sbRuntime");
+      const bnEl = document.getElementById("sbBinance");
+      const tvEl = document.getElementById("sbTradingView");
+      const rt = statusBarState.runtime;
+      const health = statusBarState.health;
+      const tv = statusBarState.tv;
+      if (rt && rt.enabled) {{
+        rtEl.innerHTML = rt.locked ? lvlBadge("WARN", "已锁定") : lvlBadge("OK", "未锁定");
+      }} else if (rt && !rt.enabled) {{
+        rtEl.innerHTML = lvlBadge("INFO", "未启用");
+      }}
+      if (statusBarState.binanceUrl) {{
+        const url = String(statusBarState.binanceUrl).toLowerCase();
+        let env = "unknown";
+        let level = "WARN";
+        if (url.includes("demo-fapi") || url.includes("testnet")) {{
+          env = "demo/testnet";
+          level = "OK";
+        }} else if (url.includes("fapi.binance.com")) {{
+          env = "live";
+          level = "ERROR";
+        }}
+        if (health && health.summary && health.summary.binance_ok === false) {{
+          env = "连接失败";
+          level = "ERROR";
+        }}
+        bnEl.innerHTML = lvlBadge(level, env);
+      }} else if (health && health.summary) {{
+        bnEl.innerHTML = health.summary.binance_ok ? lvlBadge("OK", "正常") : lvlBadge("ERROR", "异常");
+      }}
+      if (tv) {{
+        tvEl.innerHTML = lvlBadge(tv.level || "OK", "接入 " + (tv.level || "OK"));
+      }}
+    }}
+
     function fmtJson(value) {{
       if (value === null || value === undefined) return "null";
       if (typeof value === "string") {{
@@ -1653,6 +2058,13 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         if (key === "success_rate" && val !== undefined) val = (Number(val) * 100).toFixed(2) + "%";
         el.textContent = val ?? "-";
       }});
+      const failed = Number(stats.failed_count || 0);
+      const protFailed = Number(stats.protection_failed_count || 0);
+      if (failed + protFailed > 0) {{
+        setSectionBadge("overview", "WARN", "有异常");
+      }} else {{
+        setSectionBadge("overview", "OK", "正常");
+      }}
     }}
 
     const RUNTIME_LABELS = {{
@@ -1710,7 +2122,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           <th>未实现盈亏</th><th>名义价值</th><th>初始保证金</th><th>强平价</th>
         </tr></thead>
         <tbody>${{rows.map((row) => `<tr>
-          <td>${{esc(row.symbol)}}</td>
+          <td class="col-tech">${{techField(row.symbol)}}</td>
           <td>${{esc(row.side)}}</td>
           <td>${{esc(row.positionAmt)}}</td>
           <td>${{esc(row.entryPrice)}}</td>
@@ -1735,7 +2147,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           <th>只减仓</th><th>全平</th><th>状态</th><th>触发类型</th><th>创建时间</th>
         </tr></thead>
         <tbody>${{rows.map((row) => `<tr>
-          <td>${{esc(row.symbol)}}</td>
+          <td class="col-tech">${{techField(row.symbol)}}</td>
           <td>${{esc(row.orderType)}}</td>
           <td>${{esc(row.side)}}</td>
           <td>${{esc(row.triggerPrice)}}</td>
@@ -1752,30 +2164,41 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     function renderExecutions(rows) {{
       const body = document.getElementById("executionsBody");
       if (!rows || rows.length === 0) {{
-        body.innerHTML = '<tr><td colspan="13" class="empty">暂无记录</td></tr>';
+        body.innerHTML = '<tr><td colspan="14" class="empty">暂无记录</td></tr>';
         return;
       }}
       body.innerHTML = rows.map((row) => {{
         const status = row["状态"] || "";
-        return `<tr>
+        const signalId = row["信号ID"] || "-";
+        const rowCls = journalRowClass(status);
+        return `<tr class="${{esc(rowCls)}}">
           <td>${{esc(row["编号"])}}</td>
           <td class="mono">${{esc(row["创建时间"])}}</td>
-          <td>${{esc(row["交易对"])}}</td>
+          <td class="col-tech">${{techField(row["交易对"])}}</td>
           <td>${{esc(row["方向"])}}</td>
-          <td><span class="status ${{esc(status)}}">${{esc(status)}}</span></td>
+          <td class="col-status">${{statusBadgeForJournal(status)}}</td>
           <td>${{esc(row["状态说明"])}}</td>
-          <td class="mono">${{esc(row["跳过原因"])}}</td>
-          <td>${{esc(row["计划数量"])}}</td>
-          <td>${{esc(row["成交数量"])}}</td>
-          <td>${{esc(row["进场价"])}}</td>
-          <td>${{esc(row["杠杆"])}}</td>
-          <td class="mono">${{esc(row["信号编号"])}}</td>
+          <td class="col-tech-wide">${{techField(row["跳过原因"] || "-")}}</td>
+          <td class="mono">${{esc(row["计划数量"] || "-")}}</td>
+          <td class="mono">${{esc(row["成交数量"] || "-")}}</td>
+          <td class="mono">${{esc(row["进场价"] || "-")}}</td>
+          <td>${{esc(row["杠杆"] || "-")}}</td>
+          <td class="col-tech-wide">${{techField(signalId)}}</td>
+          <td class="col-tech-wide">${{techField(row["信号编号"])}}</td>
           <td><button class="secondary" type="button" data-id="${{esc(row["编号"])}}">详情</button></td>
         </tr>`;
       }}).join("");
       body.querySelectorAll("button[data-id]").forEach((btn) => {{
         btn.addEventListener("click", () => openDetail(btn.getAttribute("data-id")));
       }});
+      const hasFail = rows.some((r) => ["failed", "protection_failed"].includes(r["状态"]));
+      const hasWarn = rows.some((r) =>
+        ["blocked_by_runtime_lock", "tv_sandbox_rejected", "blocked_by_account_risk", "entry_not_filled"].includes(r["状态"])
+      );
+      if (hasFail) setSectionBadge("journal", "ERROR", "有失败");
+      else if (hasWarn) setSectionBadge("journal", "WARN", "有拒绝");
+      else if (rows.length) setSectionBadge("journal", "OK", "正常");
+      else setSectionBadge("journal", "INFO", "无记录");
     }}
 
     function renderBySymbol(rows) {{
@@ -1785,7 +2208,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         return;
       }}
       body.innerHTML = rows.map((row) => `<tr>
-        <td>${{esc(row.symbol)}}</td>
+        <td class="col-tech">${{techField(row.symbol)}}</td>
         <td>${{esc(row.total_executions)}}</td>
         <td>${{esc(row.protected_count)}}</td>
         <td>${{esc(row.entry_not_filled_count)}}</td>
@@ -1801,8 +2224,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         return;
       }}
       body.innerHTML = rows.map((row) => `<tr>
-        <td class="mono">${{esc(row.reason)}}</td>
-        <td>${{esc(row.status)}}</td>
+        <td class="col-tech-wide">${{techField(row.reason)}}</td>
+        <td class="col-tech">${{techField(row.status)}}</td>
         <td>${{esc(row.count)}}</td>
       </tr>`).join("");
     }}
@@ -1811,15 +2234,16 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       const el = document.getElementById("runtimeControlStatus");
       if (!data) {{
         el.innerHTML = '<div class="empty">暂无运行控制数据</div>';
+        setSectionBadge("runtime-control", "INFO", "未知");
         return;
       }}
       if (!data.enabled) {{
         el.innerHTML = '<div class="empty">Runtime Control 未启用</div>';
+        setSectionBadge("runtime-control", "WARN", "未启用");
         return;
       }}
       const locked = !!data.locked;
       const lockLabel = locked ? "已锁定" : "未锁定";
-      const lockClass = locked ? "locked" : "unlocked";
       const fields = [
         ["Runtime Control", "启用"],
         ["锁定原因", data.reason],
@@ -1828,12 +2252,18 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         ["自动解锁时间", data.locked_until],
         ["更新时间", data.updated_at],
       ];
-      let html = `<div><span>当前状态</span><span class="lock-badge ${{lockClass}}">${{lockLabel}}</span></div>`;
+      let html = `<div class="kv-item"><span class="kv-label">当前状态</span>${{locked ? lvlBadge("WARN", lockLabel) : lvlBadge("OK", lockLabel)}}</div>`;
       html += fields.map(([k, v]) => {{
         const display = (v === null || v === undefined || v === "") ? "-" : v;
-        return `<div><span>${{esc(k)}}</span>${{esc(display)}}</div>`;
+        const valHtml = k === "锁定原因" ? techField(display) : esc(display);
+        return `<div class="kv-item"><span class="kv-label">${{esc(k)}}</span>${{valHtml}}</div>`;
       }}).join("");
       el.innerHTML = html;
+      setSectionBadge(
+        "runtime-control",
+        locked ? "WARN" : "OK",
+        locked ? "已锁定" : "未锁定"
+      );
     }}
 
     function renderRuntimeControlEvents(rows, errorMessage) {{
@@ -1852,8 +2282,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         </tr></thead>
         <tbody>${{rows.map((row) => `<tr>
           <td class="mono">${{esc(row.created_at)}}</td>
-          <td>${{esc(row.action)}}</td>
-          <td>${{esc(row.reason)}}</td>
+          <td class="col-tech">${{techField(row.action)}}</td>
+          <td class="col-tech-wide">${{techField(row.reason)}}</td>
           <td>${{esc(row.actor)}}</td>
           <td class="mono">${{esc(row.locked_until)}}</td>
         </tr>`).join("")}}</tbody>
@@ -1881,7 +2311,17 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         live: "live",
         unknown: "unknown",
       }}[data.binance_env] || data.binance_env || "-";
-      const summaryHtml = [
+      const last = data.last_tv_execution;
+      const lastHtml = last ? `<h3 class="subsection-title">最近 TV 信号</h3>
+        <div class="detail-meta">
+          <div class="kv-item"><span class="kv-label">编号</span>${{esc(last.id)}}</div>
+          <div class="kv-item"><span class="kv-label">signal_id</span>${{techField(last.signal_id || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">交易对</span>${{techField(last.symbol || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">状态</span>${{statusBadgeForJournal(last.status || "")}}</div>
+          <div class="kv-item"><span class="kv-label">跳过原因</span>${{techField(last.skip_reason || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">时间</span><span class="mono">${{esc(last.created_at || "-")}}</span></div>
+        </div>` : '<div class="empty" style="margin-top:0.75rem">暂无 TV 信号执行记录</div>';
+      wrap.innerHTML = `${{renderKvGrid([
         ["沙盒启用", data.enabled ? "是" : "否"],
         ["Binance 环境", envLabel],
         ["拒绝实盘 endpoint", data.reject_live_binance ? "是" : "否"],
@@ -1891,24 +2331,19 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         ["最大 margin_usdt", data.max_margin_usdt ?? "-"],
         ["允许 entry_type", (data.allowed_entry_types || []).join(", ") || "-"],
         ["要求 source", data.require_source ? "是" : "否"],
-      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
-      const last = data.last_tv_execution;
-      const lastHtml = last ? `<h3 class="subsection-title">最近 TV 信号</h3>
-        <div class="detail-meta">
-          <div><span>编号</span>${{esc(last.id)}}</div>
-          <div><span>signal_id</span>${{esc(last.signal_id || "-")}}</div>
-          <div><span>交易对</span>${{esc(last.symbol || "-")}}</div>
-          <div><span>状态</span>${{esc(last.status || "-")}}</div>
-          <div><span>跳过原因</span>${{esc(last.skip_reason || "-")}}</div>
-          <div><span>时间</span>${{esc(last.created_at || "-")}}</div>
-        </div>` : '<div class="empty" style="margin-top:0.75rem">暂无 TV 信号执行记录</div>';
-      wrap.innerHTML = `<div class="detail-meta">${{summaryHtml}}</div>${{lastHtml}}`;
+      ])}}${{lastHtml}}`;
+      const env = data.binance_env || "unknown";
+      if (!data.enabled) setSectionBadge("tv-sandbox", "WARN", "未启用");
+      else if (env === "live") setSectionBadge("tv-sandbox", "ERROR", "live");
+      else setSectionBadge("tv-sandbox", "OK", "demo");
     }}
 
     async function loadTvAlertReadinessSection() {{
       const wrap = document.getElementById("tvAlertReadinessWrap");
       try {{
         const resp = await apiFetch("/dashboard/api/tv-alert-readiness");
+        statusBarState.tv = resp["TV接入检查"] || null;
+        updateStatusBar();
         renderTvCheckBlock(wrap, resp["TV接入检查"] || null, "接入准备");
       }} catch (err) {{
         wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
@@ -1931,26 +2366,43 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         wrap.innerHTML = '<div class="empty">暂无数据</div>';
         return;
       }}
-      const level = (data.level || "OK").toLowerCase();
+      const level = normLevel(data.level || "OK");
       const summary = data.summary || {{}};
       const checks = data.checks || [];
-      const summaryKeys = Object.keys(summary);
-      const summaryHtml = summaryKeys.map((k) =>
-        `<div><span>${{esc(k)}}</span>${{esc(summary[k])}}</div>`
-      ).join("");
-      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
-        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
-        <tbody>${{checks.map((c) => `<tr>
-          <td class="mono">${{esc(c.name)}}</td>
-          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
-          <td>${{esc(c.message)}}</td>
-        </tr>`).join("")}}</tbody>
-      </table>` : "";
+      const summaryLabels = {{
+        app_version: "应用版本",
+        required_method: "请求方法",
+        required_path: "Webhook 路径",
+        binance_env: "Binance 环境",
+        tv_sandbox_enabled: "TV 沙盒",
+        tv_observation_enabled: "TV 观察",
+        webhook_secret_configured: "Webhook 已配置",
+        webhook_secret_length: "Webhook 长度",
+        public_base_url_configured: "公网 URL 已配置",
+        webhook_url_hint: "Webhook URL 提示",
+        enable_trading: "允许真实下单",
+        runtime_control_enabled: "Runtime Control",
+        reject_live_binance: "拒绝实盘",
+        expected_symbols: "预期交易对",
+        allowed_symbols: "允许交易对",
+      }};
+      const summaryItems = Object.entries(summary).map(([k, v]) => {{
+        const label = summaryLabels[k] || k;
+        let display = v;
+        if (Array.isArray(v)) display = v.join(", ");
+        if (typeof v === "boolean") display = v ? "是" : "否";
+        if (v === null || v === undefined) display = "-";
+        if (k === "webhook_url_hint" && v) display = String(v);
+        return [label, display];
+      }});
       wrap.innerHTML = `
-        <div class="health-level ${{level}}">${{esc(titlePrefix)}} 等级: ${{esc(data.level || "OK")}}</div>
-        <div class="detail-meta">${{summaryHtml}}</div>
-        ${{checksHtml}}
+        <div class="section-level ${{level}}">${{lvlBadge(data.level)}} ${{esc(titlePrefix)}}检查</div>
+        ${{renderOverviewCards(summaryItems.slice(0, 8))}}
+        ${{renderKvGrid(summaryItems.slice(8))}}
+        <h3 class="subsection-title">检查项</h3>
+        ${{renderCheckGrid(checks)}}
       `;
+      setSectionBadge("tv-readiness", data.level);
     }}
 
     function renderTvObservation(wrap, data) {{
@@ -1958,35 +2410,31 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         wrap.innerHTML = '<div class="empty">暂无观察数据</div>';
         return;
       }}
-      const level = (data.level || "OK").toLowerCase();
+      const level = normLevel(data.level || "OK");
       const summary = data.summary || {{}};
       const checks = data.checks || [];
-      const statHtml = [
-        ["观察窗口(小时)", data.window_hours ?? "-"],
-        ["TV 信号总数", summary.total_tv_signals ?? 0],
-        ["protected", summary.protected_count ?? 0],
-        ["failed", summary.failed_count ?? 0],
-        ["tv_sandbox_rejected", summary.tv_sandbox_rejected_count ?? 0],
-        ["runtime_lock", summary.blocked_by_runtime_lock_count ?? 0],
-        ["连续失败", summary.consecutive_failures ?? 0],
-        ["最近 TV 信号时间", summary.last_tv_signal_time || "-"],
-        ["最近 TV 状态", summary.last_tv_signal_status || "-"],
-        ["持仓数", summary.open_position_count ?? 0],
-        ["未保护持仓", summary.unprotected_position_count ?? 0],
-      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
-      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
-        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
-        <tbody>${{checks.map((c) => `<tr>
-          <td class="mono">${{esc(c.name)}}</td>
-          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
-          <td>${{esc(c.message)}}</td>
-        </tr>`).join("")}}</tbody>
-      </table>` : "";
       wrap.innerHTML = `
-        <div class="health-level ${{level}}">观察等级: ${{esc(data.level || "OK")}}</div>
-        <div class="detail-meta">${{statHtml}}</div>
-        ${{checksHtml}}
+        <div class="section-level ${{level}}">${{lvlBadge(data.level)}} 连续观察 · ${{esc(data.window_hours)}}h 窗口</div>
+        ${{renderOverviewCards([
+          ["TV 信号总数", summary.total_tv_signals ?? 0],
+          ["protected", summary.protected_count ?? 0],
+          ["failed", summary.failed_count ?? 0],
+          ["sandbox 拒绝", summary.tv_sandbox_rejected_count ?? 0],
+          ["runtime lock", summary.blocked_by_runtime_lock_count ?? 0],
+          ["连续失败", summary.consecutive_failures ?? 0],
+          ["持仓数", summary.open_position_count ?? 0],
+          ["未保护持仓", summary.unprotected_position_count ?? 0],
+        ])}}
+        <div class="detail-meta">
+          <div class="kv-item"><span class="kv-label">最近 TV 信号时间</span><span class="mono">${{esc(summary.last_tv_signal_time || "-")}}</span></div>
+          <div class="kv-item"><span class="kv-label">最近 TV 状态</span>${{statusBadgeForJournal(summary.last_tv_signal_status || "")}}</div>
+          <div class="kv-item"><span class="kv-label">最近 signal_id</span>${{techField(summary.last_tv_signal_id || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">最近交易对</span>${{techField(summary.last_tv_signal_symbol || "-")}}</div>
+        </div>
+        <h3 class="subsection-title">观察检查</h3>
+        ${{renderCheckGrid(checks)}}
       `;
+      setSectionBadge("tv-observation", data.level);
     }}
 
     async function loadRiskConfigSection() {{
@@ -2005,7 +2453,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         wrap.innerHTML = '<div class="empty">暂无配置体检数据</div>';
         return;
       }}
-      const level = (data.level || "OK").toLowerCase();
+      const level = normLevel(data.level || "OK");
       const summary = data.summary || {{}};
       const checks = data.checks || [];
       const envLabel = {{
@@ -2013,32 +2461,26 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         live: "live",
         unknown: "unknown",
       }}[summary.binance_env] || summary.binance_env || "-";
-      const summaryHtml = [
-        ["当前环境", envLabel],
-        ["允许真实下单", summary.enable_trading ? "是" : "否"],
-        ["Runtime Control", summary.runtime_control_enabled ? "已启用" : "未启用"],
-        ["Dashboard 保护", summary.dashboard_protected ? "是" : "否"],
-        ["Journal 保护", summary.journal_protected ? "是" : "否"],
-        ["Stats 保护", summary.stats_protected ? "是" : "否"],
-        ["允许交易对数", summary.allowed_symbol_count ?? "-"],
-        ["最大杠杆", summary.max_auto_leverage ?? "-"],
-        ["Webhook 已配置", summary.webhook_secret_configured ? "是" : "否"],
-        ["Dashboard Token 已配置", summary.dashboard_token_configured ? "是" : "否"],
-      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
-      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
-        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
-        <tbody>${{checks.map((c) => `<tr>
-          <td class="mono">${{esc(c.name)}}</td>
-          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
-          <td>${{esc(c.message)}}</td>
-        </tr>`).join("")}}</tbody>
-      </table>` : '<div class="empty">无检查项</div>';
       wrap.innerHTML = `
-        <div class="health-level ${{level}}">总体等级: ${{esc(data.level || "OK")}}</div>
-        <div class="detail-meta">${{summaryHtml}}</div>
+        <div class="section-level ${{level}}">${{lvlBadge(data.level)}} 总体等级</div>
+        ${{renderOverviewCards([
+          ["当前环境", envLabel],
+          ["允许真实下单", summary.enable_trading ? "是" : "否"],
+          ["Runtime Control", summary.runtime_control_enabled ? "已启用" : "未启用"],
+          ["Dashboard 保护", summary.dashboard_protected ? "是" : "否"],
+          ["Journal 保护", summary.journal_protected ? "是" : "否"],
+          ["Stats 保护", summary.stats_protected ? "是" : "否"],
+          ["允许交易对数", summary.allowed_symbol_count ?? "-"],
+          ["最大杠杆", summary.max_auto_leverage ?? "-"],
+        ])}}
+        ${{renderKvGrid([
+          ["Webhook 已配置", summary.webhook_secret_configured ? "是" : "否"],
+          ["Dashboard Token 已配置", summary.dashboard_token_configured ? "是" : "否"],
+        ])}}
         <h3 class="subsection-title">风控提示</h3>
-        ${{checksHtml}}
+        ${{renderCheckGrid(checks)}}
       `;
+      setSectionBadge("risk-config", data.level);
     }}
 
     async function loadAlertsSection() {{
@@ -2055,37 +2497,44 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       const wrap = document.getElementById("alertCenterWrap");
       const summary = resp.summary || {{}};
       const alerts = resp["告警"] || [];
-      const level = (summary.latest_level || "OK").toLowerCase();
+      const level = normLevel(summary.latest_level || "OK");
+      const cardClass = (k) => k === "ERROR" ? "highlight-error" : k === "WARN" ? "highlight-warn" : "";
       const summaryCards = `
-        <div class="cards" style="margin-bottom:0.75rem">
-          <div class="card"><div class="label">ERROR</div><div class="value">${{esc(summary.error_count ?? 0)}}</div></div>
-          <div class="card"><div class="label">WARN</div><div class="value">${{esc(summary.warn_count ?? 0)}}</div></div>
+        <div class="cards" style="margin-bottom:0.85rem">
+          <div class="card ${{cardClass("ERROR")}}"><div class="label">ERROR</div><div class="value">${{esc(summary.error_count ?? 0)}}</div></div>
+          <div class="card ${{cardClass("WARN")}}"><div class="label">WARN</div><div class="value">${{esc(summary.warn_count ?? 0)}}</div></div>
           <div class="card"><div class="label">INFO</div><div class="value">${{esc(summary.info_count ?? 0)}}</div></div>
-          <div class="card"><div class="label">最新等级</div><div class="value health-level ${{level}}" style="font-size:1rem">${{esc(summary.latest_level || "OK")}}</div></div>
+          <div class="card"><div class="label">最新等级</div><div class="value">${{lvlBadge(summary.latest_level || "OK")}}</div></div>
         </div>`;
       if (!alerts.length) {{
         wrap.innerHTML = summaryCards + '<div class="empty">当前无 WARN/ERROR/INFO 告警</div>';
         return;
       }}
-      wrap.innerHTML = summaryCards + `<div style="overflow-x:auto"><table>
+      wrap.innerHTML = summaryCards + `<div class="table-wrap"><table>
         <thead><tr>
           <th>时间</th><th>等级</th><th>来源</th><th>类型</th><th>标题</th><th>说明</th>
         </tr></thead>
-        <tbody>${{alerts.map((a) => `<tr>
+        <tbody>${{alerts.map((a) => {{
+          const rowCls = "alert-row-" + normLevel(a.level);
+          return `<tr class="${{esc(rowCls)}}">
           <td class="mono">${{esc(a.created_at || "-")}}</td>
-          <td><span class="check-level ${{esc((a.level||'OK').toLowerCase())}}">${{esc(a.level)}}</span></td>
+          <td>${{lvlBadge(a.level)}}</td>
           <td>${{esc(a.source)}}</td>
-          <td class="mono">${{esc(a.type)}}</td>
+          <td class="col-tech-wide">${{techField(a.type)}}</td>
           <td>${{esc(a.title)}}</td>
-          <td>${{esc(a.message)}}</td>
-        </tr>`).join("")}}</tbody>
+          <td class="col-tech-wide">${{techField(a.message)}}</td>
+        </tr>`;
+        }}).join("")}}</tbody>
       </table></div>`;
+      setSectionBadge("alerts", summary.latest_level || "OK");
     }}
 
     async function loadHealthOverviewSection() {{
       const wrap = document.getElementById("healthOverviewWrap");
       try {{
         const resp = await apiFetch("/dashboard/api/health-overview");
+        statusBarState.health = resp["健康摘要"] || null;
+        updateStatusBar();
         renderHealthOverview(resp["健康摘要"] || null);
       }} catch (err) {{
         wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
@@ -2098,39 +2547,33 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         wrap.innerHTML = '<div class="empty">暂无健康摘要数据</div>';
         return;
       }}
-      const level = (data.level || "OK").toLowerCase();
+      const level = normLevel(data.level || "OK");
       const summary = data.summary || {{}};
       const checks = data.checks || [];
-      const summaryHtml = [
-        ["允许真实下单", summary.enable_trading ? "是" : "否"],
-        ["Binance 状态", summary.binance_ok ? "正常" : "异常"],
-        ["Runtime 锁定", summary.runtime_locked ? "是" : "否"],
-        ["当前持仓数", summary.open_position_count ?? "-"],
-        ["条件单数", summary.algo_order_count ?? "-"],
-        ["最近执行数", summary.recent_execution_count ?? "-"],
-        ["最近执行状态", summary.last_execution_status || "-"],
-        ["最近拒绝原因", summary.last_rejection_reason || "-"],
-      ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
-      const checksHtml = checks.length ? `<table style="margin-top:0.75rem">
-        <thead><tr><th>检查项</th><th>等级</th><th>说明</th></tr></thead>
-        <tbody>${{checks.map((c) => `<tr>
-          <td class="mono">${{esc(c.name)}}</td>
-          <td><span class="check-level ${{esc((c.level||'OK').toLowerCase())}}">${{esc(c.level)}}</span></td>
-          <td>${{esc(c.message)}}</td>
-        </tr>`).join("")}}</tbody>
-      </table>` : '<div class="empty">无检查项</div>';
       wrap.innerHTML = `
-        <div class="health-level ${{level}}">总体等级: ${{esc(data.level || "OK")}}</div>
-        <div class="detail-meta">${{summaryHtml}}</div>
+        <div class="section-level ${{level}}">${{lvlBadge(data.level)}} 系统健康</div>
+        ${{renderOverviewCards([
+          ["允许真实下单", summary.enable_trading ? "是" : "否"],
+          ["Binance 状态", summary.binance_ok ? "正常" : "异常"],
+          ["Runtime 锁定", summary.runtime_locked ? "是" : "否"],
+          ["当前持仓数", summary.open_position_count ?? "-"],
+          ["条件单数", summary.algo_order_count ?? "-"],
+          ["最近执行数", summary.recent_execution_count ?? "-"],
+          ["最近执行状态", summary.last_execution_status || "-", true],
+          ["最近拒绝原因", summary.last_rejection_reason || "-", true],
+        ])}}
         <h3 class="subsection-title">风险提示</h3>
-        ${{checksHtml}}
+        ${{renderCheckGrid(checks)}}
       `;
+      setSectionBadge("health", data.level);
     }}
 
     async function loadRuntimeControlSection() {{
       const statusEl = document.getElementById("runtimeControlStatus");
       try {{
         const statusResp = await apiFetch("/dashboard/api/runtime-control/status");
+        statusBarState.runtime = statusResp["运行控制"] || null;
+        updateStatusBar();
         renderRuntimeControlStatus(statusResp["运行控制"] || null);
       }} catch (err) {{
         statusEl.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
@@ -2165,6 +2608,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           apiFetch("/dashboard/api/algo-orders"),
         ]);
         renderSummary(summaryResp["统计"] || {{}});
+        statusBarState.binanceUrl = ((runtimeResp["运行配置"] || {{}}).binance_base_url) || null;
+        updateStatusBar();
         renderKeyValueGrid("runtimeMeta", runtimeResp["运行配置"] || {{}}, RUNTIME_LABELS);
         renderKeyValueGrid("healthMeta", healthResp["健康"] || {{}}, HEALTH_LABELS);
         renderPositions(posResp["持仓"] || []);
@@ -2202,9 +2647,14 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           ["成交数量", record["成交数量"]],
           ["进场价", record["进场价"]],
           ["杠杆", record["杠杆"]],
+          ["signal_id", record["信号ID"]],
           ["信号编号", record["信号编号"]],
           ["创建时间", record["创建时间"]],
-        ].map(([k, v]) => `<div><span>${{esc(k)}}</span>${{esc(v)}}</div>`).join("");
+        ].map(([k, v]) => {{
+          const techKeys = new Set(["交易对", "状态", "跳过原因", "signal_id", "信号编号"]);
+          const inner = techKeys.has(k) ? techField(v ?? "-") : esc(v ?? "-");
+          return `<div class="kv-item"><span class="kv-label">${{esc(k)}}</span>${{inner}}</div>`;
+        }}).join("");
         document.getElementById("detailRawSignal").textContent = fmtJson(record["原始信号"]);
         document.getElementById("detailPlan").textContent = fmtJson(record["交易计划"]);
         document.getElementById("detailAccountRisk").textContent = fmtJson(record["账户风控"]);
@@ -2238,6 +2688,9 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     }});
 
     dashboardToken = readTokenFromUrl();
+    setupSectionNav();
+    setupScrollUi();
+    setupBackToTop();
     loadAll();
     setupAutoRefresh();
   </script>
