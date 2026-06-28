@@ -496,6 +496,7 @@ class RuntimeControlStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_events_created ON runtime_lock_events(created_at)"
             )
+            self._ensure_one_shot_columns(conn)
             now = datetime.now(timezone.utc).isoformat()
             conn.execute(
                 """
@@ -516,10 +517,28 @@ class RuntimeControlStore:
             return None
         return {key: row[key] for key in row.keys()}
 
-    def get_state(self) -> dict:
-        with self.lock, self._connect() as conn:
-            row = conn.execute("SELECT * FROM runtime_state WHERE id = 1").fetchone()
-        state = self._row_to_dict(row) or {}
+    @staticmethod
+    def _ensure_one_shot_columns(conn) -> None:
+        columns = {
+            "one_shot_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "one_shot_remaining": "INTEGER NOT NULL DEFAULT 0",
+            "one_shot_reason": "TEXT",
+            "one_shot_operator": "TEXT",
+            "one_shot_started_at": "TEXT",
+            "one_shot_expires_at": "TEXT",
+            "one_shot_consumed_by_signal_id": "TEXT",
+            "one_shot_consumed_at": "TEXT",
+        }
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(runtime_state)").fetchall()
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE runtime_state ADD COLUMN {name} {definition}")
+
+    @staticmethod
+    def _normalize_state(row: sqlite3.Row | None) -> dict:
+        state = RuntimeControlStore._row_to_dict(row) or {}
         return {
             "locked": bool(state.get("locked")),
             "reason": state.get("reason"),
@@ -527,7 +546,32 @@ class RuntimeControlStore:
             "locked_by": state.get("locked_by"),
             "locked_at": state.get("locked_at"),
             "updated_at": state.get("updated_at"),
+            "one_shot_enabled": bool(state.get("one_shot_enabled")),
+            "one_shot_remaining": int(state.get("one_shot_remaining") or 0),
+            "one_shot_reason": state.get("one_shot_reason"),
+            "one_shot_operator": state.get("one_shot_operator"),
+            "one_shot_started_at": state.get("one_shot_started_at"),
+            "one_shot_expires_at": state.get("one_shot_expires_at"),
+            "one_shot_consumed_by_signal_id": state.get("one_shot_consumed_by_signal_id"),
+            "one_shot_consumed_at": state.get("one_shot_consumed_at"),
         }
+
+    def get_state(self) -> dict:
+        with self.lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM runtime_state WHERE id = 1").fetchone()
+        return self._normalize_state(row)
+
+    def _clear_one_shot_sql(self) -> str:
+        return """
+            one_shot_enabled = 0,
+            one_shot_remaining = 0,
+            one_shot_reason = NULL,
+            one_shot_operator = NULL,
+            one_shot_started_at = NULL,
+            one_shot_expires_at = NULL,
+            one_shot_consumed_by_signal_id = NULL,
+            one_shot_consumed_at = NULL
+        """
 
     def set_locked(
         self,
@@ -539,9 +583,10 @@ class RuntimeControlStore:
         now = self._now()
         with self.lock, self._connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE runtime_state
-                SET locked = 1, reason = ?, locked_until = ?, locked_by = ?, locked_at = ?, updated_at = ?
+                SET locked = 1, reason = ?, locked_until = ?, locked_by = ?, locked_at = ?, updated_at = ?,
+                    {self._clear_one_shot_sql()}
                 WHERE id = 1
                 """,
                 (reason, locked_until, actor, now, now),
@@ -553,12 +598,99 @@ class RuntimeControlStore:
         now = self._now()
         with self.lock, self._connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE runtime_state
-                SET locked = 0, reason = NULL, locked_until = NULL, locked_by = NULL, locked_at = NULL, updated_at = ?
+                SET locked = 0, reason = NULL, locked_until = NULL, locked_by = NULL, locked_at = NULL,
+                    updated_at = ?, {self._clear_one_shot_sql()}
                 WHERE id = 1
                 """,
                 (now,),
+            )
+            conn.commit()
+        return self.get_state()
+
+    def set_one_shot_unlock(
+        self,
+        *,
+        reason: str,
+        operator: str | None,
+        started_at: str,
+        expires_at: str,
+    ) -> dict:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE runtime_state
+                SET locked = 0, reason = NULL, locked_until = NULL, locked_by = NULL, locked_at = NULL,
+                    updated_at = ?,
+                    one_shot_enabled = 1,
+                    one_shot_remaining = 1,
+                    one_shot_reason = ?,
+                    one_shot_operator = ?,
+                    one_shot_started_at = ?,
+                    one_shot_expires_at = ?,
+                    one_shot_consumed_by_signal_id = NULL,
+                    one_shot_consumed_at = NULL
+                WHERE id = 1
+                """,
+                (now, reason, operator, started_at, expires_at),
+            )
+            conn.commit()
+        return self.get_state()
+
+    def consume_one_shot_and_lock(
+        self,
+        *,
+        signal_id: str,
+        lock_reason: str,
+        actor: str = "system",
+    ) -> dict:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE runtime_state
+                SET locked = 1,
+                    reason = ?,
+                    locked_until = NULL,
+                    locked_by = ?,
+                    locked_at = ?,
+                    updated_at = ?,
+                    one_shot_enabled = 0,
+                    one_shot_remaining = 0,
+                    one_shot_consumed_by_signal_id = ?,
+                    one_shot_consumed_at = ?
+                WHERE id = 1
+                  AND one_shot_enabled = 1
+                  AND one_shot_remaining > 0
+                  AND one_shot_consumed_at IS NULL
+                """,
+                (lock_reason, actor, now, now, signal_id, now),
+            )
+            conn.commit()
+        return self.get_state()
+
+    def expire_one_shot_and_lock(self, *, lock_reason: str, actor: str = "system") -> dict:
+        now = self._now()
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE runtime_state
+                SET locked = 1,
+                    reason = ?,
+                    locked_until = NULL,
+                    locked_by = ?,
+                    locked_at = ?,
+                    updated_at = ?,
+                    one_shot_enabled = 0,
+                    one_shot_remaining = 0
+                WHERE id = 1
+                  AND one_shot_enabled = 1
+                  AND one_shot_remaining > 0
+                  AND one_shot_consumed_at IS NULL
+                """,
+                (lock_reason, actor, now, now),
             )
             conn.commit()
         return self.get_state()

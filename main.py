@@ -17,12 +17,13 @@ from app.exchange_rules import ExchangeRules
 from app.schemas import TradingViewSignal, normalize_side
 from app.storage import AccountRiskStore, RuntimeControlStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
-from app.journal import TradeJournal
+from app.journal import TradeJournal, resolve_execution_status
 from app.stats import TradeStatsService
 from app.dashboard import create_dashboard_router, require_api_token_if_protected
 from app.runtime_control import (
     LockRequest,
     RuntimeControl,
+    UnlockOnceRequest,
     UnlockRequest,
     verify_runtime_control_write_token,
     verify_runtime_read_token,
@@ -105,14 +106,22 @@ def make_signal_key(signal: TradingViewSignal, raw_payload: dict) -> str:
 
 def execute_background(signal: TradingViewSignal, signal_key: str, raw_payload: dict) -> None:
     result: dict | None = None
+    final_status = "failed"
+    is_tv = is_tv_signal(raw_payload, settings)
     try:
         result = trader.execute(signal, signal_key, raw_payload)
         trade_journal.persist_execution(signal, signal_key, raw_payload, result)
         store.mark_done(signal_key)
+        final_status = resolve_execution_status(result)
     except Exception as exc:
         logger.exception("Signal execution failed: key=%s error=%s", signal_key, exc)
         trade_journal.persist_failure(signal, signal_key, raw_payload, exc, result)
         store.mark_failed(signal_key, str(exc))
+        final_status = "failed"
+    finally:
+        if is_tv:
+            signal_id = (signal.signal_id or signal_key or "unknown").strip() or "unknown"
+            runtime_control.maybe_consume_one_shot_for_tv_signal(signal_id, final_status)
 
 
 @app.get("/health")
@@ -540,3 +549,28 @@ async def runtime_unlock(
         locked_by=body.locked_by,
     )
     return JSONResponse(content={"成功": True, "已锁定": False, "运行状态": summary})
+
+
+@app.post("/runtime/unlock-once")
+async def runtime_unlock_once(
+    body: UnlockOnceRequest,
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    summary = runtime_control.unlock_once(
+        reason=body.reason.strip() or "one-shot unlock",
+        operator=body.operator.strip() or "local-admin",
+        ttl_seconds=body.ttl_seconds,
+    )
+    return JSONResponse(
+        content={
+            "成功": True,
+            "one_shot": True,
+            "运行状态": runtime_control.status_payload(),
+        }
+    )

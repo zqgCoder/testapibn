@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Header, HTTPException, Query
@@ -52,6 +52,12 @@ class UnlockRequest(BaseModel):
         return resolve_runtime_operator(self.operator, self.actor, self.locked_by)
 
 
+class UnlockOnceRequest(BaseModel):
+    reason: str = Field(default="one-shot unlock", max_length=500)
+    operator: str = Field(default="local-admin", max_length=120)
+    ttl_seconds: int = Field(default=900, ge=30, le=3600)
+
+
 class RuntimeControl:
     def __init__(self, settings: Settings, store: RuntimeControlStore) -> None:
         self.settings = settings
@@ -61,10 +67,24 @@ class RuntimeControl:
     def summary_dict(state: dict) -> dict[str, Any]:
         return {
             "locked": bool(state.get("locked")),
+            "effective_locked": bool(state.get("effective_locked", state.get("locked"))),
             "reason": state.get("reason"),
             "locked_until": state.get("locked_until"),
             "locked_by": state.get("locked_by"),
             "locked_at": state.get("locked_at"),
+        }
+
+    @staticmethod
+    def one_shot_payload(state: dict) -> dict[str, Any]:
+        return {
+            "enabled": bool(state.get("one_shot_enabled")),
+            "remaining": int(state.get("one_shot_remaining") or 0),
+            "reason": state.get("one_shot_reason"),
+            "operator": state.get("one_shot_operator"),
+            "started_at": state.get("one_shot_started_at"),
+            "expires_at": state.get("one_shot_expires_at"),
+            "consumed_by_signal_id": state.get("one_shot_consumed_by_signal_id"),
+            "consumed_at": state.get("one_shot_consumed_at"),
         }
 
     @staticmethod
@@ -78,6 +98,20 @@ class RuntimeControl:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _one_shot_active(state: dict) -> bool:
+        return (
+            bool(state.get("one_shot_enabled"))
+            and int(state.get("one_shot_remaining") or 0) > 0
+            and not state.get("one_shot_consumed_at")
+        )
+
+    def _with_effective_locked(self, state: dict) -> dict:
+        effective_locked = bool(state.get("locked"))
+        if self._one_shot_active(state):
+            effective_locked = False
+        return {**state, "effective_locked": effective_locked}
 
     def _maybe_auto_expire(self, state: dict) -> dict:
         if not state.get("locked"):
@@ -105,17 +139,45 @@ class RuntimeControl:
         logger.info("Runtime lock auto-expired: locked_until=%s reason=%s", locked_until, previous_reason)
         return self.store.get_state()
 
+    def _maybe_expire_one_shot(self, state: dict) -> dict:
+        if not self._one_shot_active(state):
+            return state
+        expires_at = state.get("one_shot_expires_at")
+        if not expires_at:
+            return state
+        try:
+            until = self._parse_locked_until(expires_at)
+        except ValueError:
+            return state
+        if until is None:
+            return state
+        now = datetime.now(timezone.utc)
+        if now < until:
+            return state
+        previous_reason = state.get("one_shot_reason")
+        self.store.expire_one_shot_and_lock(lock_reason="one-shot expired", actor="system")
+        self.store.append_event(
+            action="one_shot_expired",
+            reason=f"one-shot expired (previous_reason={previous_reason or '-'})",
+            locked_until=expires_at,
+            actor="system",
+        )
+        logger.info("Runtime one-shot expired: expires_at=%s reason=%s", expires_at, previous_reason)
+        return self.store.get_state()
+
     def effective_state(self) -> dict:
         state = self.store.get_state()
         if not self.settings.runtime_control_enabled:
-            return {**state, "locked": False}
-        return self._maybe_auto_expire(state)
+            return self._with_effective_locked({**state, "locked": False})
+        state = self._maybe_auto_expire(state)
+        state = self._maybe_expire_one_shot(state)
+        return self._with_effective_locked(state)
 
     def is_execution_blocked(self) -> tuple[bool, dict[str, Any]]:
         if not self.settings.runtime_control_enabled:
             return False, {}
         state = self.effective_state()
-        if not state.get("locked"):
+        if not state.get("effective_locked"):
             return False, {}
         return True, self.summary_dict(state)
 
@@ -124,6 +186,7 @@ class RuntimeControl:
         payload = {
             "enabled": self.settings.runtime_control_enabled,
             **self.summary_dict(state),
+            "one_shot": self.one_shot_payload(state),
             "updated_at": state.get("updated_at"),
         }
         return payload
@@ -146,7 +209,7 @@ class RuntimeControl:
         state = self.store.set_locked(reason=reason, locked_until=locked_until, actor=resolved)
         self.store.append_event(action="lock", reason=reason, locked_until=locked_until, actor=resolved)
         logger.info("Runtime locked: reason=%s locked_until=%s operator=%s", reason, locked_until, resolved)
-        return self.summary_dict(state)
+        return self.summary_dict(self._with_effective_locked(state))
 
     def unlock(
         self,
@@ -165,7 +228,65 @@ class RuntimeControl:
             actor=resolved,
         )
         logger.info("Runtime unlocked: operator=%s", resolved)
-        return self.summary_dict(state)
+        return self.summary_dict(self._with_effective_locked(state))
+
+    def unlock_once(
+        self,
+        *,
+        reason: str,
+        operator: str,
+        ttl_seconds: int,
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=int(ttl_seconds))
+        started_at = now.isoformat()
+        expires_at = expires.isoformat()
+        state = self.store.set_one_shot_unlock(
+            reason=reason.strip() or "one-shot unlock",
+            operator=operator.strip() or "local-admin",
+            started_at=started_at,
+            expires_at=expires_at,
+        )
+        self.store.append_event(
+            action="unlock_once",
+            reason=reason,
+            locked_until=expires_at,
+            actor=operator,
+        )
+        logger.info(
+            "Runtime one-shot unlock enabled: operator=%s ttl=%ss expires_at=%s reason=%s",
+            operator,
+            ttl_seconds,
+            expires_at,
+            reason,
+        )
+        return self.summary_dict(self._with_effective_locked(state))
+
+    def maybe_consume_one_shot_for_tv_signal(self, signal_id: str, status: str) -> bool:
+        if not self.settings.runtime_control_enabled:
+            return False
+        state = self.store.get_state()
+        if not self._one_shot_active(state):
+            return False
+        safe_signal_id = (signal_id or "unknown").strip() or "unknown"
+        safe_status = (status or "unknown").strip() or "unknown"
+        lock_reason = f"one-shot consumed by signal_id={safe_signal_id} status={safe_status}"
+        before = self.store.get_state()
+        self.store.consume_one_shot_and_lock(signal_id=safe_signal_id, lock_reason=lock_reason)
+        after = self.store.get_state()
+        consumed = (
+            after.get("one_shot_consumed_at")
+            and after.get("one_shot_consumed_at") != before.get("one_shot_consumed_at")
+        )
+        if consumed:
+            self.store.append_event(
+                action="one_shot_consumed",
+                reason=lock_reason,
+                locked_until=before.get("one_shot_expires_at"),
+                actor="system",
+            )
+            logger.info("Runtime one-shot consumed: %s", lock_reason)
+        return bool(consumed)
 
     def list_events(self, limit: int = 50) -> list[dict]:
         return self.store.list_events(limit=limit)

@@ -904,3 +904,76 @@ GET /dashboard/api/tv-cloud-alerts?hours=24
 - 不修改 `.env`、`signals.db`、`logs`、`.venv`
 - 不为统计 401 泄露 secret 或改变 webhook 401 响应
 - 不自动解锁 Runtime Control、不触发真实下单
+
+## Runtime One-Shot Guard（v6.3.1）
+
+分支：`v6.3.1-runtime-one-shot-guard`
+
+### 背景与目标
+
+v6.3 云端测试时，若使用普通 `/runtime/unlock` 等待 TV 信号，用户可能忘记手动 lock，后续信号会继续执行。
+
+**One-Shot Guard** 只允许 **下一条 TradingView 信号** 进入执行链路；信号处理完成后（无论 `protected`、`failed`、`tv_sandbox_rejected`、`blocked_by_runtime_lock` 或异常）都会 **自动 lock 回去**。
+
+不改变：下单逻辑、风控计算、Binance endpoint、现有 `/runtime/lock` 与 `/runtime/unlock` 语义。
+
+### 新增 API
+
+```text
+POST /runtime/unlock-once
+```
+
+请求体示例：
+
+```json
+{
+  "reason": "v6.3 controlled demo-fapi cloud alert run",
+  "operator": "local-admin",
+  "ttl_seconds": 900
+}
+```
+
+- 鉴权：`X-Runtime-Control-Token`（或 query `control_token`）
+- `ttl_seconds` 默认 900，范围 30–3600
+- 启用后 `effective_locked=false`，`one_shot.remaining=1`
+- TTL 内无信号消费 → 自动 `locked=true`，`reason=one-shot expired`
+- 手动 `/runtime/lock` 或 `/runtime/unlock` → 清空 one-shot 状态
+
+### GET /runtime/status 新增字段
+
+```json
+{
+  "one_shot": {
+    "enabled": true,
+    "remaining": 1,
+    "reason": "...",
+    "operator": "local-admin",
+    "started_at": "...",
+    "expires_at": "...",
+    "consumed_by_signal_id": null,
+    "consumed_at": null
+  },
+  "effective_locked": false
+}
+```
+
+### 推荐操作流程
+
+1. `POST /runtime/unlock-once`（带 Runtime Control Token）
+2. 等待 **下一条** TradingView 云端信号触发
+3. 系统自动 lock，reason 类似：`one-shot consumed by signal_id=TV-... status=protected`
+4. 查询 `GET /journal/executions`、`GET /positions`、`GET /algo-orders/{symbol}` 验证结果
+
+### Dashboard
+
+- **运行控制** 区块展示 One-Shot 状态
+- **Alert Center**：`runtime_one_shot_unlock` / `runtime_one_shot_consumed` / `runtime_one_shot_expired`
+- **Health Overview**：One-Shot 是否开启
+
+### 自动 lock reason 示例
+
+```text
+one-shot consumed by signal_id=TV-BTCUSDT-1h-123 status=protected
+one-shot consumed by signal_id=TV-BTCUSDT-1h-123 status=tv_sandbox_rejected
+one-shot expired
+```
