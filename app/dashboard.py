@@ -260,8 +260,12 @@ def build_health_overview(
 
     runtime_state = runtime_control.status_payload()
     runtime_enabled = bool(runtime_state.get("enabled"))
-    runtime_locked = bool(runtime_state.get("locked"))
+    runtime_locked = bool(runtime_state.get("effective_locked", runtime_state.get("locked")))
+    one_shot = runtime_state.get("one_shot") or {}
     summary["runtime_locked"] = runtime_locked
+    summary["runtime_one_shot_active"] = bool(
+        one_shot.get("enabled") and int(one_shot.get("remaining") or 0) > 0
+    )
     if not runtime_enabled:
         checks.append(
             {
@@ -290,6 +294,29 @@ def build_health_overview(
                 "name": "runtime_lock",
                 "level": "OK",
                 "message": "Runtime Control 未锁定",
+            }
+        )
+
+    if runtime_enabled and summary.get("runtime_one_shot_active"):
+        checks.append(
+            {
+                "name": "runtime_one_shot",
+                "level": "WARN",
+                "message": (
+                    f"Runtime One-Shot 已启用，剩余 {one_shot.get('remaining', 0)} 次，"
+                    f"expires={one_shot.get('expires_at') or '-'}"
+                ),
+            }
+        )
+    elif runtime_enabled and one_shot.get("consumed_at"):
+        checks.append(
+            {
+                "name": "runtime_one_shot",
+                "level": "INFO",
+                "message": (
+                    f"最近 One-Shot 已被消费: signal_id={one_shot.get('consumed_by_signal_id') or '-'}, "
+                    f"at={one_shot.get('consumed_at') or '-'}"
+                ),
             }
         )
 
@@ -481,6 +508,7 @@ _HEALTH_ALERT_TITLES: dict[str, str] = {
     "protection_orders": "持仓保护检查",
     "api_protection": "API Token 保护",
     "runtime_status_permission": "Runtime 状态读取权限",
+    "runtime_one_shot": "Runtime One-Shot 状态",
 }
 
 _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
@@ -497,6 +525,9 @@ _RUNTIME_EVENT_RULES: dict[str, tuple[str, str, str]] = {
     "lock": ("WARN", "runtime_lock", "Runtime Control 被锁定"),
     "auto_expire": ("INFO", "runtime_auto_expire", "Runtime Control 自动解锁"),
     "unlock": ("INFO", "runtime_unlock", "Runtime Control 已解锁"),
+    "unlock_once": ("INFO", "runtime_one_shot_unlock", "Runtime One-Shot 已启用"),
+    "one_shot_consumed": ("WARN", "runtime_one_shot_consumed", "Runtime One-Shot 已被信号消费"),
+    "one_shot_expired": ("WARN", "runtime_one_shot_expired", "Runtime One-Shot 已过期"),
 }
 
 
@@ -653,7 +684,8 @@ def build_alerts(
             alerts.append(alert)
 
     runtime_state = runtime_control.status_payload()
-    if runtime_state.get("enabled") and runtime_state.get("locked"):
+    effective_locked = bool(runtime_state.get("effective_locked", runtime_state.get("locked")))
+    if runtime_state.get("enabled") and effective_locked:
         reason = runtime_state.get("reason") or "未说明"
         locked_by = runtime_state.get("locked_by") or "-"
         locked_until = runtime_state.get("locked_until") or "无"
@@ -671,6 +703,29 @@ def build_alerts(
                 "status": None,
                 "reason": reason,
                 "created_at": runtime_state.get("locked_at") or runtime_state.get("updated_at"),
+            }
+        )
+    one_shot = runtime_state.get("one_shot") or {}
+    if (
+        runtime_state.get("enabled")
+        and one_shot.get("enabled")
+        and int(one_shot.get("remaining") or 0) > 0
+    ):
+        alerts.append(
+            {
+                "id": "runtime-one-shot-active",
+                "source": "runtime",
+                "level": "WARN",
+                "type": "runtime_one_shot_unlock",
+                "title": "Runtime One-Shot 等待下一条 TV 信号",
+                "message": (
+                    f"remaining={one_shot.get('remaining')}, expires={one_shot.get('expires_at') or '-'}, "
+                    f"reason={one_shot.get('reason') or '-'}"
+                ),
+                "symbol": None,
+                "status": None,
+                "reason": one_shot.get("reason"),
+                "created_at": one_shot.get("started_at") or runtime_state.get("updated_at"),
             }
         )
 
@@ -2092,7 +2147,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       const health = statusBarState.health;
       const tv = statusBarState.tv;
       if (rt && rt.enabled) {{
-        rtEl.innerHTML = rt.locked ? lvlBadge("WARN", "已锁定") : lvlBadge("OK", "未锁定");
+        const effLocked = rt.effective_locked !== undefined ? rt.effective_locked : rt.locked;
+        rtEl.innerHTML = effLocked ? lvlBadge("WARN", "已锁定") : lvlBadge("OK", "未锁定");
       }} else if (rt && !rt.enabled) {{
         rtEl.innerHTML = lvlBadge("INFO", "未启用");
       }}
@@ -2319,14 +2375,24 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         setSectionBadge("runtime-control", "WARN", "未启用");
         return;
       }}
-      const locked = !!data.locked;
+      const locked = data.effective_locked !== undefined ? !!data.effective_locked : !!data.locked;
       const lockLabel = locked ? "已锁定" : "未锁定";
+      const oneShot = data.one_shot || {{}};
       const fields = [
         ["Runtime Control", "启用"],
+        ["有效锁定", locked ? "是" : "否"],
         ["锁定原因", data.reason],
         ["锁定人", data.locked_by],
         ["锁定时间", data.locked_at],
         ["自动解锁时间", data.locked_until],
+        ["One-Shot 启用", oneShot.enabled ? "是" : "否"],
+        ["One-Shot 剩余", oneShot.remaining ?? "-"],
+        ["One-Shot 原因", oneShot.reason],
+        ["One-Shot 操作人", oneShot.operator],
+        ["One-Shot 开始", oneShot.started_at],
+        ["One-Shot 过期", oneShot.expires_at],
+        ["One-Shot 消费 signal_id", oneShot.consumed_by_signal_id],
+        ["One-Shot 消费时间", oneShot.consumed_at],
         ["更新时间", data.updated_at],
       ];
       let html = `<div class="kv-item"><span class="kv-label">当前状态</span>${{locked ? lvlBadge("WARN", lockLabel) : lvlBadge("OK", lockLabel)}}</div>`;
@@ -2338,8 +2404,8 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       el.innerHTML = html;
       setSectionBadge(
         "runtime-control",
-        locked ? "WARN" : "OK",
-        locked ? "已锁定" : "未锁定"
+        oneShot.enabled && (oneShot.remaining || 0) > 0 ? "WARN" : (locked ? "WARN" : "OK"),
+        oneShot.enabled && (oneShot.remaining || 0) > 0 ? "One-Shot" : (locked ? "已锁定" : "未锁定")
       );
     }}
 
