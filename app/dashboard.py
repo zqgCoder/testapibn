@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .stats import TradeStatsService
 from .storage import TradeJournalStore
+from .tv_cloud_audit import alerts_from_tv_cloud_audit, build_tv_cloud_audit
 from .tv_observation import alerts_from_tv_observation, build_tv_alert_readiness, build_tv_observation
 from .tv_sandbox import binance_env_label, is_tv_execution_row
 
@@ -639,6 +640,12 @@ def build_alerts(
     except Exception:
         pass
 
+    try:
+        cloud_audit = build_tv_cloud_audit(settings, journal_store)
+        alerts.extend(alerts_from_tv_cloud_audit(cloud_audit, created_at=now_iso))
+    except Exception:
+        pass
+
     runtime_events = runtime_control.list_events(limit=cap)
     for event in runtime_events:
         alert = _alert_from_runtime_event(event)
@@ -1219,6 +1226,58 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         fail_msg += " 阈值配置无效"
     checks.append({"name": "tv_alert_failure_policy", "level": fail_level, "message": fail_msg})
 
+    if settings.tv_cloud_audit_enabled:
+        checks.append(
+            {
+                "name": "tv_cloud_audit_enabled",
+                "level": "OK",
+                "message": "TV 云端 Alert 审计已启用",
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "tv_cloud_audit_enabled",
+                "level": "WARN",
+                "message": "TV_CLOUD_AUDIT_ENABLED=false",
+            }
+        )
+
+    window_level = "OK"
+    window_msg = f"TV_CLOUD_AUDIT_WINDOW_HOURS={settings.tv_cloud_audit_window_hours}"
+    if settings.tv_cloud_audit_window_hours > 168:
+        window_level = "ERROR"
+        window_msg += " 超出上限 168"
+    elif settings.tv_cloud_audit_window_hours < 1:
+        window_level = "ERROR"
+        window_msg += " 无效"
+    checks.append({"name": "tv_cloud_audit_window", "level": window_level, "message": window_msg})
+
+    checks.append(
+        {
+            "name": "tv_cloud_duplicate_policy",
+            "level": "OK",
+            "message": f"重复 signal_id WARN>={settings.tv_cloud_duplicate_signal_warn}",
+        }
+    )
+    checks.append(
+        {
+            "name": "tv_cloud_payload_invalid_policy",
+            "level": "OK",
+            "message": f"tv_payload_invalid WARN>={settings.tv_cloud_payload_invalid_warn}",
+        }
+    )
+    checks.append(
+        {
+            "name": "tv_cloud_unauthorized_policy",
+            "level": "INFO",
+            "message": (
+                f"401 未授权 WARN 阈值>={settings.tv_cloud_unauthorized_warn}；"
+                "v6.2 未从 journal 统计 401，请结合 access log"
+            ),
+        }
+    )
+
     checks.append(
         {
             "name": "dashboard_readonly_guarantee",
@@ -1255,6 +1314,12 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         "tv_alert_observation_enabled": settings.tv_alert_observation_enabled,
         "tv_alert_stale_minutes": settings.tv_alert_stale_minutes,
         "tv_alert_observation_window_hours": settings.tv_alert_observation_window_hours,
+        "tv_cloud_audit_enabled": settings.tv_cloud_audit_enabled,
+        "tv_cloud_audit_window_hours": settings.tv_cloud_audit_window_hours,
+        "tv_cloud_duplicate_signal_warn": settings.tv_cloud_duplicate_signal_warn,
+        "tv_cloud_payload_invalid_warn": settings.tv_cloud_payload_invalid_warn,
+        "tv_cloud_unauthorized_warn": settings.tv_cloud_unauthorized_warn,
+        "tv_cloud_runtime_lock_warn": settings.tv_cloud_runtime_lock_warn,
     }
 
     return {
@@ -1582,6 +1647,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       <a class="dash-nav-item" href="#tv-sandbox" data-section="tv-sandbox">TradingView 沙盒</a>
       <a class="dash-nav-item" href="#tv-readiness" data-section="tv-readiness">TV 接入准备</a>
       <a class="dash-nav-item" href="#tv-observation" data-section="tv-observation">TV 连续观察</a>
+      <a class="dash-nav-item" href="#tv-cloud-audit" data-section="tv-cloud-audit">TV 云端审计</a>
       <a class="dash-nav-item" href="#runtime-control" data-section="runtime-control">运行控制</a>
       <a class="dash-nav-item" href="#journal" data-section="journal">最近执行</a>
     </nav>
@@ -1670,6 +1736,17 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       </div>
       <p class="section-note">只读统计 · 最近窗口内 TV 信号运行状态</p>
       <div id="tvObservationWrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </section>
+
+    <section id="tv-cloud-audit" class="dash-section">
+      <div class="section-head">
+        <h2>TV 云端 Alert 审计</h2>
+        <span class="section-badge" id="badge-tv-cloud-audit"></span>
+      </div>
+      <p class="section-note">只读审计 · 窗口内 TV 云端信号安全统计（不修改执行逻辑）</p>
+      <div id="tvCloudAuditWrap">
         <div class="empty">加载中...</div>
       </div>
     </section>
@@ -1914,7 +1991,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
     const statusBarState = {{ runtime: null, health: null, tv: null, binanceUrl: null }};
     const NAV_SECTION_IDS = [
       "overview", "health", "alerts", "risk-config", "tv-sandbox",
-      "tv-readiness", "tv-observation", "runtime-control", "journal",
+      "tv-readiness", "tv-observation", "tv-cloud-audit", "runtime-control", "journal",
     ];
     let navClickLockUntil = 0;
     let scrollUiReady = false;
@@ -2437,6 +2514,62 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       setSectionBadge("tv-observation", data.level);
     }}
 
+    async function loadTvCloudAuditSection() {{
+      const wrap = document.getElementById("tvCloudAuditWrap");
+      try {{
+        const resp = await apiFetch("/dashboard/api/tv-cloud-alerts");
+        renderTvCloudAudit(wrap, resp["TV云端Alert审计"] || null);
+      }} catch (err) {{
+        wrap.innerHTML = `<div class="empty">${{esc(err.message || String(err))}}</div>`;
+      }}
+    }}
+
+    function renderTvCloudAudit(wrap, data) {{
+      if (!data) {{
+        wrap.innerHTML = '<div class="empty">暂无云端审计数据</div>';
+        return;
+      }}
+      const level = normLevel(data.level || "OK");
+      const summary = data.summary || {{}};
+      const checks = data.checks || [];
+      const recent = data.recent || [];
+      const recentTable = recent.length ? `<div class="table-wrap"><table>
+        <thead><tr>
+          <th>时间</th><th>signal_id</th><th>交易对</th><th>状态</th><th>跳过原因</th>
+        </tr></thead>
+        <tbody>${{recent.map((row) => `<tr>
+          <td class="mono">${{esc(row.created_at || "-")}}</td>
+          <td class="col-tech-wide">${{techField(row.signal_id || "-")}}</td>
+          <td class="col-tech">${{techField(row.symbol || "-")}}</td>
+          <td class="col-status">${{statusBadgeForJournal(row.status || "")}}</td>
+          <td class="col-tech-wide">${{techField(row.skip_reason || "-")}}</td>
+        </tr>`).join("")}}</tbody>
+      </table></div>` : '<div class="empty">窗口内暂无 TV 云端信号记录</div>';
+      wrap.innerHTML = `
+        <div class="section-level ${{level}}">${{lvlBadge(data.level)}} 云端 Alert 审计 · ${{esc(data.window_hours)}}h 窗口</div>
+        ${{renderOverviewCards([
+          ["云端信号总数", summary.total_cloud_signals ?? 0],
+          ["重复 signal_id", summary.duplicate_signal_count ?? 0],
+          ["payload 无效", summary.payload_invalid_count ?? 0],
+          ["Runtime Lock", summary.runtime_locked_count ?? 0],
+          ["未授权 401", summary.unauthorized_count ?? 0],
+          ["protected", summary.protected_count ?? 0],
+          ["failed", summary.failed_count ?? 0],
+        ])}}
+        <div class="detail-meta">
+          <div class="kv-item"><span class="kv-label">最近 signal_id</span>${{techField(summary.last_signal_id || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">最近状态</span>${{statusBadgeForJournal(summary.last_status || "")}}</div>
+          <div class="kv-item"><span class="kv-label">最近交易对</span>${{techField(summary.last_symbol || "-")}}</div>
+          <div class="kv-item"><span class="kv-label">最近时间</span><span class="mono">${{esc(summary.last_time || "-")}}</span></div>
+        </div>
+        <h3 class="subsection-title">审计检查</h3>
+        ${{renderCheckGrid(checks)}}
+        <h3 class="subsection-title">最近云端信号</h3>
+        ${{recentTable}}
+      `;
+      setSectionBadge("tv-cloud-audit", data.level);
+    }}
+
     async function loadRiskConfigSection() {{
       const wrap = document.getElementById("riskConfigWrap");
       try {{
@@ -2626,6 +2759,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       await loadTvSandboxSection();
       await loadTvAlertReadinessSection();
       await loadTvObservationSection();
+      await loadTvCloudAuditSection();
       await loadRuntimeControlSection();
     }}
 
@@ -3088,5 +3222,37 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "TV观察": observation})
+
+    @router.get("/api/tv-cloud-alerts")
+    async def api_tv_cloud_alerts(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+        hours: int | None = Query(default=None, ge=1, le=168),
+    ):
+        guard(request, token, x_dashboard_token)
+        try:
+            audit = build_tv_cloud_audit(
+                settings,
+                journal_store,
+                hours=hours,
+            )
+        except Exception as exc:
+            window = hours if hours is not None else settings.tv_cloud_audit_window_hours
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "错误": str(exc)[:500],
+                    "TV云端Alert审计": {
+                        "level": "ERROR",
+                        "window_hours": window,
+                        "summary": {},
+                        "checks": [],
+                        "recent": [],
+                    },
+                },
+                status_code=200,
+            )
+        return JSONResponse(content={"成功": True, "TV云端Alert审计": audit})
 
     return router

@@ -112,6 +112,14 @@ class Settings(BaseSettings):
         default="BTCUSDT,ETHUSDT,SOLUSDT", alias="TV_ALERT_EXPECTED_SYMBOLS"
     )
 
+    # ===== V6.2 TradingView Cloud Alert Audit =====
+    tv_cloud_audit_enabled: bool = Field(default=True, alias="TV_CLOUD_AUDIT_ENABLED")
+    tv_cloud_audit_window_hours: int = Field(default=24, alias="TV_CLOUD_AUDIT_WINDOW_HOURS")
+    tv_cloud_duplicate_signal_warn: int = Field(default=1, alias="TV_CLOUD_DUPLICATE_SIGNAL_WARN")
+    tv_cloud_unauthorized_warn: int = Field(default=3, alias="TV_CLOUD_UNAUTHORIZED_WARN")
+    tv_cloud_payload_invalid_warn: int = Field(default=3, alias="TV_CLOUD_PAYLOAD_INVALID_WARN")
+    tv_cloud_runtime_lock_warn: int = Field(default=3, alias="TV_CLOUD_RUNTIME_LOCK_WARN")
+
     @property
     def tv_alert_expected_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.tv_alert_expected_symbols.split(",") if s.strip()}
@@ -216,6 +224,16 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "TV_ALERT_CONSECUTIVE_FAILURE_ERROR must be >= TV_ALERT_CONSECUTIVE_FAILURE_WARN"
             )
+        if self.tv_cloud_audit_window_hours < 1 or self.tv_cloud_audit_window_hours > 168:
+            raise RuntimeError("TV_CLOUD_AUDIT_WINDOW_HOURS must be between 1 and 168")
+        if self.tv_cloud_duplicate_signal_warn < 1:
+            raise RuntimeError("TV_CLOUD_DUPLICATE_SIGNAL_WARN must be >= 1")
+        if self.tv_cloud_unauthorized_warn < 1:
+            raise RuntimeError("TV_CLOUD_UNAUTHORIZED_WARN must be >= 1")
+        if self.tv_cloud_payload_invalid_warn < 1:
+            raise RuntimeError("TV_CLOUD_PAYLOAD_INVALID_WARN must be >= 1")
+        if self.tv_cloud_runtime_lock_warn < 1:
+            raise RuntimeError("TV_CLOUD_RUNTIME_LOCK_WARN must be >= 1")
 
 
 @lru_cache(maxsize=1)

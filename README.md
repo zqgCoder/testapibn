@@ -822,3 +822,85 @@ GET /dashboard/api/alerts?limit=20
 ```
 
 Alert JSON 示例仍使用 `examples/tradingview_alert_v5_tv_sandbox.json`（将 `secret` 替换为本地值，勿提交真实 secret）。
+
+## TradingView 云端 Alert 安全审计（v6.2）
+
+分支：`v6.2-tv-cloud-alert-safety` · 基于稳定版 `v6.1.1-stable`。
+
+本版本**仅增强 TV 云端 Alert 只读审计与 Dashboard 展示**，不修改实际下单、风控拒绝、Runtime Control lock/unlock、Binance endpoint 选择、TradingView 信号执行、Webhook secret 校验规则，也不修改现有 API 返回结构。
+
+### v6.2 目标
+
+在 v6.0/v6.1 连续观察与云端链路验证基础上，对 **journal 内 TV 云端信号** 做安全审计统计：
+
+- 重复 `signal_id`（只读展示，**不修改**现有去重/执行逻辑）
+- `skip_reason=tv_payload_invalid` 计数
+- `status=blocked_by_runtime_lock` 或 `skip_reason=runtime_locked` 计数
+- `401` 未授权请求：**v6.2 未持久化到 journal**，`unauthorized_count` 预留为 0，请结合服务器 access log 观察
+
+**不解锁、不下单、不接实盘**；Binance 仍须 demo-fapi / testnet。
+
+### 新增配置项（见 `.env.example`）
+
+| 变量 | 说明 |
+|------|------|
+| `TV_CLOUD_AUDIT_ENABLED` | 启用 TV 云端 Alert 审计 |
+| `TV_CLOUD_AUDIT_WINDOW_HOURS` | 审计统计窗口（小时，1–168） |
+| `TV_CLOUD_DUPLICATE_SIGNAL_WARN` | 重复 signal_id WARN 阈值 |
+| `TV_CLOUD_UNAUTHORIZED_WARN` | 401 未授权 WARN 阈值（预留，v6.2 无 journal 统计） |
+| `TV_CLOUD_PAYLOAD_INVALID_WARN` | `tv_payload_invalid` WARN 阈值 |
+| `TV_CLOUD_RUNTIME_LOCK_WARN` | Runtime Lock 拦截 WARN 阈值 |
+
+### 新增 Dashboard API
+
+```text
+GET /dashboard/api/tv-cloud-alerts
+GET /dashboard/api/tv-cloud-alerts?hours=24
+```
+
+- 仅 **Dashboard Token** 可访问（`?token=` 或 `X-Dashboard-Token`）
+- **Runtime Control Token 不可访问**
+- 不返回 `WEBHOOK_SECRET`、`DASHBOARD_TOKEN`、`RUNTIME_CONTROL_TOKEN`、`BINANCE_API_KEY`、`BINANCE_API_SECRET` 明文
+
+返回示例键：`TV云端Alert审计` → `level`、`window_hours`、`summary`、`checks`、`recent`。
+
+### Dashboard 区块
+
+在 **TradingView 连续观察** 与 **运行控制** 之间新增 **TV 云端 Alert 审计**（导航：**TV 云端审计**）：
+
+- summary cards（总数、重复、payload 无效、Runtime Lock、401 预留、protected、failed）
+- 审计 checks
+- recent 表格（`signal_id` 等宽 + ellipsis + title 悬停）
+
+### Alert Center 集成
+
+| type | 级别 | 说明 |
+|------|------|------|
+| `tv_cloud_duplicate_signal` | WARN | 窗口内重复 signal_id 超阈值 |
+| `tv_cloud_payload_invalid` | WARN | tv_payload_invalid 超阈值 |
+| `tv_cloud_unauthorized` | WARN | 401 超阈值（v6.2 需 access log，journal 无数据时不触发） |
+| `tv_cloud_runtime_locked_many` | WARN | Runtime Lock 拦截超阈值 |
+
+### Risk Config Inspector 新增检查
+
+- `tv_cloud_audit_enabled`
+- `tv_cloud_audit_window`
+- `tv_cloud_duplicate_policy`
+- `tv_cloud_payload_invalid_policy`
+- `tv_cloud_unauthorized_policy`
+
+### TradingView signal_id 建议
+
+在 Alert Message JSON 中使用唯一、可追踪的 `signal_id`，例如：
+
+```json
+"signal_id": "TV-{{ticker}}-{{interval}}-{{timenow}}"
+```
+
+配合 `TV_SIGNAL_ID_PREFIX=TV-`，便于审计窗口内识别重复与来源。
+
+### v6.2 明确不做
+
+- 不修改 `.env`、`signals.db`、`logs`、`.venv`
+- 不为统计 401 泄露 secret 或改变 webhook 401 响应
+- 不自动解锁 Runtime Control、不触发真实下单
