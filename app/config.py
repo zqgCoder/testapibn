@@ -101,6 +101,19 @@ class Settings(BaseSettings):
     )
     tv_signal_reject_live_binance: bool = Field(default=True, alias="TV_SIGNAL_REJECT_LIVE_BINANCE")
 
+    # ===== V6.4 TradingView Production Readiness =====
+    tv_signal_require_position_strategy: bool = Field(
+        default=True, alias="TV_SIGNAL_REQUIRE_POSITION_STRATEGY"
+    )
+    tv_signal_max_age_seconds: int = Field(default=300, alias="TV_SIGNAL_MAX_AGE_SECONDS")
+    tv_signal_require_timestamp: bool = Field(default=False, alias="TV_SIGNAL_REQUIRE_TIMESTAMP")
+    tv_signal_reject_expired: bool = Field(default=True, alias="TV_SIGNAL_REJECT_EXPIRED")
+    tv_signal_tp_qty_sum_min: float = Field(default=0.95, alias="TV_SIGNAL_TP_QTY_SUM_MIN")
+    tv_signal_tp_qty_sum_max: float = Field(default=1.05, alias="TV_SIGNAL_TP_QTY_SUM_MAX")
+    tv_signal_max_tp_count: int = Field(default=5, alias="TV_SIGNAL_MAX_TP_COUNT")
+    tv_signal_min_stop_pct: float = Field(default=0.25, alias="TV_SIGNAL_MIN_STOP_PCT")
+    tv_signal_min_tp_pct: float = Field(default=0.25, alias="TV_SIGNAL_MIN_TP_PCT")
+
     # ===== V6.0 TradingView Alert Observation =====
     tv_alert_observation_enabled: bool = Field(default=True, alias="TV_ALERT_OBSERVATION_ENABLED")
     tv_alert_public_base_url: str = Field(default="", alias="TV_ALERT_PUBLIC_BASE_URL")
@@ -234,6 +247,20 @@ class Settings(BaseSettings):
             raise RuntimeError("TV_CLOUD_PAYLOAD_INVALID_WARN must be >= 1")
         if self.tv_cloud_runtime_lock_warn < 1:
             raise RuntimeError("TV_CLOUD_RUNTIME_LOCK_WARN must be >= 1")
+        if self.tv_signal_max_age_seconds < 1 or self.tv_signal_max_age_seconds > 86400:
+            raise RuntimeError("TV_SIGNAL_MAX_AGE_SECONDS must be between 1 and 86400")
+        if not (0 < self.tv_signal_tp_qty_sum_min <= 2):
+            raise RuntimeError("TV_SIGNAL_TP_QTY_SUM_MIN must be between 0 and 2")
+        if not (0 < self.tv_signal_tp_qty_sum_max <= 2):
+            raise RuntimeError("TV_SIGNAL_TP_QTY_SUM_MAX must be between 0 and 2")
+        if self.tv_signal_tp_qty_sum_min > self.tv_signal_tp_qty_sum_max:
+            raise RuntimeError("TV_SIGNAL_TP_QTY_SUM_MIN must be <= TV_SIGNAL_TP_QTY_SUM_MAX")
+        if self.tv_signal_max_tp_count < 1 or self.tv_signal_max_tp_count > 20:
+            raise RuntimeError("TV_SIGNAL_MAX_TP_COUNT must be between 1 and 20")
+        if self.tv_signal_min_stop_pct < 0 or self.tv_signal_min_stop_pct > 10:
+            raise RuntimeError("TV_SIGNAL_MIN_STOP_PCT must be between 0 and 10")
+        if self.tv_signal_min_tp_pct < 0 or self.tv_signal_min_tp_pct > 10:
+            raise RuntimeError("TV_SIGNAL_MIN_TP_PCT must be between 0 and 10")
 
 
 @lru_cache(maxsize=1)

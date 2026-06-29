@@ -33,7 +33,8 @@ from app.runtime_control import (
 )
 from app.reconcile import SafetyReconcileService
 from app.trader import Trader
-from app.tv_sandbox import is_tv_signal, validate_tv_payload
+from app.tv_sandbox import is_tv_signal, validate_tv_payload, validate_tv_policy
+from app.tv_production import apply_position_strategy, position_strategy_invalid_rejection
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
 settings = get_settings()
@@ -374,6 +375,33 @@ async def cleanup_position_orders(
     )
 
 
+def _tv_rejection_response(signal_key: str, rejection) -> JSONResponse:
+    content = {
+        "成功": False,
+        "跳过": True,
+        "跳过原因": rejection.skip_reason,
+        "提示": rejection.message,
+        "信号编号": signal_key,
+    }
+    if rejection.invalid_fields:
+        content["错误字段"] = rejection.invalid_fields
+    return JSONResponse(status_code=200, content=content)
+
+
+def _persist_tv_rejection(signal_key: str, raw_payload: dict, rejection) -> None:
+    if store.exists(signal_key):
+        return
+    side = str(raw_payload.get("side") or "")
+    store.mark_received(
+        signal_key,
+        str(raw_payload.get("symbol") or ""),
+        side,
+        json.dumps(raw_payload, default=str, ensure_ascii=False),
+    )
+    trade_journal.persist_tv_sandbox_rejection(signal_key, raw_payload, rejection)
+    store.mark_failed(signal_key, rejection.skip_reason)
+
+
 @app.post("/tradingview")
 async def tradingview_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
@@ -384,50 +412,39 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
     if not isinstance(raw_payload, dict):
         raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
 
-    if settings.tv_signal_sandbox_enabled and is_tv_signal(raw_payload, settings):
+    tv_signal = is_tv_signal(raw_payload, settings)
+
+    if settings.tv_signal_sandbox_enabled and tv_signal:
         payload_rejection = validate_tv_payload(raw_payload, settings)
         if payload_rejection is not None:
             signal_key = make_signal_key_from_raw(raw_payload)
-            if not store.exists(signal_key):
-                side = str(raw_payload.get("side") or "")
-                store.mark_received(
-                    signal_key,
-                    str(raw_payload.get("symbol") or ""),
-                    side,
-                    json.dumps(raw_payload, default=str, ensure_ascii=False),
-                )
-                trade_journal.persist_tv_sandbox_rejection(
-                    signal_key, raw_payload, payload_rejection
-                )
-                store.mark_failed(signal_key, payload_rejection.skip_reason)
-            content = {
-                "成功": False,
-                "跳过": True,
-                "跳过原因": payload_rejection.skip_reason,
-                "提示": payload_rejection.message,
-                "信号编号": signal_key,
-            }
-            if payload_rejection.invalid_fields:
-                content["错误字段"] = payload_rejection.invalid_fields
-            return JSONResponse(status_code=200, content=content)
+            _persist_tv_rejection(signal_key, raw_payload, payload_rejection)
+            return _tv_rejection_response(signal_key, payload_rejection)
+
+    if tv_signal:
+        try:
+            raw_payload = apply_position_strategy(raw_payload, settings)
+        except ValueError:
+            rejection = position_strategy_invalid_rejection()
+            signal_key = make_signal_key_from_raw(raw_payload)
+            _persist_tv_rejection(signal_key, raw_payload, rejection)
+            return _tv_rejection_response(signal_key, rejection)
 
     try:
         signal = TradingViewSignal.model_validate(raw_payload)
     except Exception as exc:
-        if settings.tv_signal_sandbox_enabled and is_tv_signal(raw_payload, settings):
+        if settings.tv_signal_sandbox_enabled and tv_signal:
             payload_rejection = validate_tv_payload(raw_payload, settings)
             if payload_rejection is not None:
                 signal_key = make_signal_key_from_raw(raw_payload)
-                content = {
-                    "成功": False,
-                    "跳过": True,
-                    "跳过原因": payload_rejection.skip_reason,
-                    "提示": payload_rejection.message,
-                    "信号编号": signal_key,
-                }
-                if payload_rejection.invalid_fields:
-                    content["错误字段"] = payload_rejection.invalid_fields
-                return JSONResponse(status_code=200, content=content)
+                _persist_tv_rejection(signal_key, raw_payload, payload_rejection)
+                return _tv_rejection_response(signal_key, payload_rejection)
+            from app.tv_production import tv_rejection_from_pydantic
+
+            pydantic_rejection = tv_rejection_from_pydantic(exc)
+            signal_key = make_signal_key_from_raw(raw_payload)
+            _persist_tv_rejection(signal_key, raw_payload, pydantic_rejection)
+            return _tv_rejection_response(signal_key, pydantic_rejection)
         raise HTTPException(status_code=422, detail=str(exc))
 
     if signal.secret != settings.webhook_secret:
@@ -440,10 +457,25 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
         raise HTTPException(status_code=422, detail=str(exc))
 
     if store.exists(signal_key):
+        if tv_signal:
+            trade_journal.persist_duplicate_signal(signal_key, raw_payload)
         return JSONResponse(
             status_code=200,
-            content={"成功": True, "是否重复信号": True, "信号编号": signal_key, "提示": "该信号已经接收过，已被防重复机制拦截"},
+            content={
+                "成功": True,
+                "是否重复信号": True,
+                "跳过": True,
+                "跳过原因": "duplicate_signal",
+                "信号编号": signal_key,
+                "提示": "该信号已经接收过，已被防重复机制拦截",
+            },
         )
+
+    if settings.tv_signal_sandbox_enabled and tv_signal:
+        policy_rejection = validate_tv_policy(raw_payload, signal, settings, client=client)
+        if policy_rejection is not None:
+            _persist_tv_rejection(signal_key, raw_payload, policy_rejection)
+            return _tv_rejection_response(signal_key, policy_rejection)
 
     store.mark_received(signal_key, signal.symbol, side, json.dumps(raw_payload, default=str, ensure_ascii=False))
     background_tasks.add_task(execute_background, signal, signal_key, raw_payload)

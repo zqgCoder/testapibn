@@ -56,6 +56,12 @@ def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
     if skip_reason == "runtime_locked":
         return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
+    if skip_reason == "duplicate_signal":
+        return ExecutionStatus.TV_SANDBOX_REJECTED
+    if skip_reason == "signal_expired":
+        return ExecutionStatus.TV_SANDBOX_REJECTED
+    if skip_reason == "position_strategy_reject":
+        return ExecutionStatus.SKIPPED_BY_POSITION_POLICY
     if skip_reason and str(skip_reason).startswith("tv_"):
         return ExecutionStatus.TV_SANDBOX_REJECTED
     if skip_reason in ACCOUNT_RISK_SKIP_REASONS:
@@ -322,6 +328,53 @@ class TradeJournal:
         except Exception as exc:
             logger.warning(
                 "Failed to persist TV sandbox rejection: signal_key=%s error=%s",
+                signal_key,
+                exc,
+            )
+            return None
+
+    def persist_duplicate_signal(self, signal_key: str, raw_payload: dict) -> int | None:
+        try:
+            result = {
+                "orders": {},
+                "skipped": True,
+                "skip_reason": "duplicate_signal",
+                "duplicate": True,
+            }
+            symbol = str(raw_payload.get("symbol") or "").upper().replace("BINANCE:", "").replace(".P", "")
+            execution_id = self.store.insert_execution(
+                {
+                    "signal_key": signal_key,
+                    "signal_id": raw_payload.get("signal_id"),
+                    "symbol": symbol or None,
+                    "side": raw_payload.get("side"),
+                    "entry_type": raw_payload.get("entry_type"),
+                    "risk_mode": raw_payload.get("risk_mode"),
+                    "position_policy": raw_payload.get("position_policy") or raw_payload.get("position_strategy"),
+                    "status": ExecutionStatus.TV_SANDBOX_REJECTED,
+                    "skip_reason": "duplicate_signal",
+                    "error_message": "duplicate signal_id received",
+                    "planned_qty": None,
+                    "filled_qty": None,
+                    "entry_price": None,
+                    "stop_loss_price": None,
+                    "target_risk_usdt": None,
+                    "estimated_total_loss_at_sl": None,
+                    "leverage": None,
+                    "account_risk_allowed": None,
+                    "account_risk_skip_reason": None,
+                    "raw_signal_json": journal_json_dumps(raw_payload),
+                    "plan_json": None,
+                    "account_risk_json": None,
+                    "entry_summary_json": None,
+                    "protection_summary_json": None,
+                    "result_json": journal_json_dumps(result),
+                }
+            )
+            return execution_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist duplicate signal: signal_key=%s error=%s",
                 signal_key,
                 exc,
             )
