@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 Side = Literal["buy", "sell", "long", "short", "BUY", "SELL", "LONG", "SHORT"]
 WorkingType = Literal["MARK_PRICE", "CONTRACT_PRICE"]
 RiskMode = Literal["manual", "fixed_pct", "fixed_usdt"]
-PositionPolicy = Literal["replace", "reverse_only", "ignore_same_side", "add"]
+PositionPolicy = Literal["replace", "reverse_only", "ignore_same_side", "add", "reject"]
 EntryType = Literal["market", "limit", "MARKET", "LIMIT"]
 
 
@@ -58,8 +58,18 @@ class TradingViewSignal(BaseModel):
     working_type: WorkingType = Field(default="MARK_PRICE")
     position_policy: PositionPolicy | None = Field(
         default=None,
-        description="Existing-position handling: replace, reverse_only, ignore_same_side, or add. Defaults to DEFAULT_POSITION_POLICY in .env.",
+        description="Existing-position handling: replace, reject, add, reverse_only, ignore_same_side. Defaults to DEFAULT_POSITION_POLICY in .env.",
     )
+    position_strategy: str | None = Field(
+        default=None,
+        description="Production alias for position_policy: replace, reject, add.",
+    )
+    sent_at: str | int | float | None = Field(default=None, description="Signal send time (ISO or Unix)")
+    timestamp: str | int | float | None = Field(default=None, description="Alias for sent_at")
+    time: str | int | float | None = Field(default=None, description="Alias for sent_at")
+    entry_price: Decimal | None = Field(default=None, gt=Decimal("0"), description="Reference entry price for SL/TP validation")
+    price: Decimal | None = Field(default=None, gt=Decimal("0"), description="Alias reference price")
+    close: Decimal | None = Field(default=None, gt=Decimal("0"), description="Alias reference price from bar close")
 
     # ===== V4 entry execution fields =====
     entry_type: EntryType | None = Field(

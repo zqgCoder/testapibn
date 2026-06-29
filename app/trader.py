@@ -867,6 +867,17 @@ class Trader:
                 self._cancel_symbol_orders(plan.symbol, responses)
             return True
 
+        if policy == "reject" and current_side is not None:
+            responses["skipped"] = True
+            responses["skip_reason"] = "position_strategy_reject"
+            logger.warning(
+                "Signal skipped by position_strategy=reject: symbol=%s current_side=%s positionAmt=%s",
+                plan.symbol,
+                current_side,
+                current_amt,
+            )
+            return False
+
         if policy in {"reverse_only", "ignore_same_side"} and same_side:
             responses["skipped"] = True
             responses["skip_reason"] = "same_side_position_exists"
@@ -1357,7 +1368,7 @@ class Trader:
 
         payload = raw_payload or {}
         if self.settings.tv_signal_sandbox_enabled and is_tv_signal(payload, self.settings):
-            rejection = validate_tv_policy(payload, signal, self.settings)
+            rejection = validate_tv_policy(payload, signal, self.settings, client=self.client)
             if rejection:
                 logger.warning(
                     "TV sandbox rejected signal: signal_key=%s skip_reason=%s message=%s",

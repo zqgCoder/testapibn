@@ -70,6 +70,21 @@ def validate_tv_payload(raw_payload: dict[str, Any], settings: Settings) -> TvSa
     if not is_tv_signal(raw_payload, settings):
         return None
 
+    from .tv_production import (
+        validate_position_strategy,
+        validate_signal_timestamp,
+        validate_tps_qty_pct,
+    )
+
+    for validator in (
+        lambda: validate_position_strategy(raw_payload, settings),
+        lambda: validate_signal_timestamp(raw_payload, settings),
+        lambda: validate_tps_qty_pct(raw_payload, settings),
+    ):
+        rejection = validator()
+        if rejection is not None:
+            return rejection
+
     missing = _missing_tv_fields(raw_payload, settings)
     if missing:
         return TvSandboxRejection(
@@ -93,6 +108,7 @@ def validate_tv_policy(
     raw_payload: dict[str, Any],
     signal: TradingViewSignal,
     settings: Settings,
+    client: Any | None = None,
 ) -> TvSandboxRejection | None:
     if not settings.tv_signal_sandbox_enabled:
         return None
@@ -164,6 +180,12 @@ def validate_tv_policy(
             message=f"TradingView 信号 entry_type={entry_type} 不在允许列表",
         )
 
+    from .tv_production import validate_sl_tp_levels
+
+    sl_tp_rejection = validate_sl_tp_levels(raw_payload, signal, settings, client)
+    if sl_tp_rejection is not None:
+        return sl_tp_rejection
+
     return None
 
 
@@ -186,6 +208,8 @@ def is_tv_execution_row(row: dict[str, Any], settings: Settings) -> bool:
     if status == "tv_sandbox_rejected" and skip_reason.startswith("tv_"):
         return True
     if skip_reason.startswith("tv_"):
+        return True
+    if skip_reason in {"duplicate_signal", "signal_expired"}:
         return True
     prefix = settings.tv_signal_id_prefix.strip()
     signal_id = str(row.get("signal_id") or "")
