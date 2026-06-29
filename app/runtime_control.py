@@ -58,6 +58,19 @@ class UnlockOnceRequest(BaseModel):
     ttl_seconds: int = Field(default=900, ge=30, le=3600)
 
 
+class PositionCloseRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    operator: str = Field(default="local-admin", max_length=120)
+    cancel_before_close: bool = True
+    cancel_after_close: bool = True
+    wait_seconds: int = Field(default=10, ge=0, le=300)
+
+
+class PositionCleanupRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    operator: str = Field(default="local-admin", max_length=120)
+
+
 class RuntimeControl:
     def __init__(self, settings: Settings, store: RuntimeControlStore) -> None:
         self.settings = settings
@@ -294,6 +307,20 @@ class RuntimeControl:
 
 def _token_matches(expected: str, provided: str | None) -> bool:
     return bool(expected and provided and provided == expected)
+
+
+def assert_demo_maintenance_allowed(settings: Settings) -> None:
+    """Reject live Binance endpoints when TV_SIGNAL_REJECT_LIVE_BINANCE is enabled."""
+    if not settings.tv_signal_reject_live_binance:
+        return
+    from .tv_sandbox import binance_env_label
+
+    env = binance_env_label(settings.binance_base_url)
+    if env not in {"demo"}:
+        raise HTTPException(
+            status_code=403,
+            detail=f"维护接口仅允许 demo/testnet 环境 (binance_env={env})",
+        )
 
 
 def verify_runtime_control_write_token(

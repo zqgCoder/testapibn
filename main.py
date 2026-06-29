@@ -22,9 +22,12 @@ from app.stats import TradeStatsService
 from app.dashboard import create_dashboard_router, require_api_token_if_protected
 from app.runtime_control import (
     LockRequest,
+    PositionCleanupRequest,
+    PositionCloseRequest,
     RuntimeControl,
     UnlockOnceRequest,
     UnlockRequest,
+    assert_demo_maintenance_allowed,
     verify_runtime_control_write_token,
     verify_runtime_read_token,
 )
@@ -220,21 +223,139 @@ async def algo_orders(symbol: str):
 async def cancel_orders(symbol: str):
     """手动取消某个交易对的普通委托和条件单。"""
     symbol = clean_path_symbol(symbol)
-    result = {"regular": None, "algo": None}
-    try:
-        result["regular"] = client.cancel_all_open_orders(symbol)
-    except Exception as exc:
-        result["regular_error"] = str(exc)
-    try:
-        result["algo"] = client.cancel_all_algo_open_orders(symbol)
-    except Exception as exc:
-        result["algo_error"] = str(exc)
+    result = trader.cancel_symbol_open_orders(symbol)
     return JSONResponse(
         content={
             "成功": True,
             "交易对": symbol,
             "提示": "已尝试取消普通委托和条件单。",
             "结果": to_jsonable(result),
+        }
+    )
+
+
+def _maintenance_result_payload(result: dict) -> dict:
+    """Map Trader maintenance result fields to Chinese JSON response keys."""
+    payload = {
+        "symbol": result.get("symbol"),
+        "position_before": result.get("position_before"),
+        "close_side": result.get("close_side"),
+        "close_quantity": result.get("close_quantity"),
+        "close_order": result.get("close_order"),
+        "position_after": result.get("position_after"),
+        "cancel_regular_before": result.get("cancel_regular_before"),
+        "cancel_algo_before": result.get("cancel_algo_before"),
+        "cancel_regular_after": result.get("cancel_regular_after"),
+        "cancel_algo_after": result.get("cancel_algo_after"),
+        "success": result.get("success"),
+        "status": result.get("status"),
+    }
+    if result.get("close_error"):
+        payload["close_error"] = result["close_error"]
+    return to_jsonable(payload)
+
+
+@app.post("/positions/{symbol}/close")
+async def close_position_maintenance(
+    symbol: str,
+    body: PositionCloseRequest,
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    """关闭指定交易对持仓并清理保护单（维护接口，Runtime 锁定期间可用）。"""
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    assert_demo_maintenance_allowed(settings)
+    symbol = clean_path_symbol(symbol)
+    try:
+        result = trader.close_position_maintenance(
+            symbol,
+            reason=body.reason.strip(),
+            operator=body.operator.strip() or "local-admin",
+            cancel_before_close=body.cancel_before_close,
+            cancel_after_close=body.cancel_after_close,
+            wait_seconds=body.wait_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    structured = _maintenance_result_payload(result)
+    if not result.get("success"):
+        status_code = 502 if result.get("status") == "close_order_failed" else 409
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "成功": False,
+                "交易对": symbol,
+                "状态": result.get("status"),
+                "提示": "平仓维护未完成，请查看结果详情。",
+                "结果": structured,
+            },
+        )
+
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "状态": result.get("status"),
+            "提示": "平仓维护已完成。",
+            "结果": structured,
+        }
+    )
+
+
+@app.post("/positions/{symbol}/cleanup")
+async def cleanup_position_orders(
+    symbol: str,
+    body: PositionCleanupRequest,
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    """取消指定交易对残留普通委托与条件单，不平仓（维护接口，Runtime 锁定期间可用）。"""
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    assert_demo_maintenance_allowed(settings)
+    symbol = clean_path_symbol(symbol)
+    try:
+        result = trader.cleanup_symbol_orders(
+            symbol,
+            reason=body.reason.strip(),
+            operator=body.operator.strip() or "local-admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    open_orders = result.get("open_orders") or []
+    algo_orders = result.get("algo_orders") or []
+    position_row = result.get("position")
+    return JSONResponse(
+        content={
+            "成功": True,
+            "交易对": symbol,
+            "提示": "已尝试清理残留委托，当前持仓未主动平仓。",
+            "结果": to_jsonable(
+                {
+                    "symbol": result.get("symbol"),
+                    "cancel_regular": result.get("cancel_regular"),
+                    "cancel_algo": result.get("cancel_algo"),
+                    "cancel_regular_error": result.get("cancel_regular_error"),
+                    "cancel_algo_error": result.get("cancel_algo_error"),
+                    "position": position_row,
+                    "open_orders": open_orders,
+                    "algo_orders": algo_orders,
+                }
+            ),
+            "持仓": position_to_chinese(position_row) if position_row else None,
+            "普通委托数量": len(open_orders),
+            "普通委托": [order_to_chinese(r) for r in open_orders],
+            "条件单数量": len(algo_orders),
+            "条件单": [algo_order_to_chinese(r) for r in algo_orders],
         }
     )
 
