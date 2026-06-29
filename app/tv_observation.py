@@ -109,7 +109,11 @@ def _consecutive_tv_failures(tv_rows: list[dict[str, Any]]) -> int:
     return streak
 
 
-def build_tv_alert_readiness(settings: Settings, app_version: str = "") -> dict[str, Any]:
+def build_tv_alert_readiness(
+    settings: Settings,
+    app_version: str = "",
+    journal_store: TradeJournalStore | None = None,
+) -> dict[str, Any]:
     checks: list[dict[str, str]] = []
     binance_env = binance_env_label(settings.binance_base_url)
     webhook_meta = _secret_meta(settings.webhook_secret)
@@ -121,6 +125,7 @@ def build_tv_alert_readiness(settings: Settings, app_version: str = "") -> dict[
         "app_version": app_version,
         "required_method": "POST",
         "required_path": "/tradingview",
+        "webhook_enabled": True,
         "binance_env": binance_env,
         "tv_sandbox_enabled": settings.tv_signal_sandbox_enabled,
         "tv_observation_enabled": settings.tv_alert_observation_enabled,
@@ -133,7 +138,38 @@ def build_tv_alert_readiness(settings: Settings, app_version: str = "") -> dict[
         "reject_live_binance": settings.tv_signal_reject_live_binance,
         "expected_symbols": sorted(settings.tv_alert_expected_symbol_set),
         "allowed_symbols": sorted(settings.allowed_symbol_set),
+        "require_position_strategy": settings.tv_signal_require_position_strategy,
+        "reject_expired": settings.tv_signal_reject_expired,
+        "max_age_seconds": settings.tv_signal_max_age_seconds,
+        "last_tv_signal_time": None,
+        "last_tv_signal_status": None,
+        "last_tv_signal_skip_reason": None,
+        "recent_duplicate_count": 0,
+        "recent_rejected_count": 0,
+        "recent_blocked_count": 0,
+        "recent_expired_count": 0,
     }
+
+    if journal_store is not None:
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        rows = journal_store.list_executions_since(since, limit=500)
+        tv_rows = [row for row in rows if is_tv_execution_row(row, settings)]
+        for row in tv_rows:
+            skip = str(row.get("skip_reason") or "")
+            status = str(row.get("status") or "")
+            if skip == "duplicate_signal":
+                summary["recent_duplicate_count"] += 1
+            if status == "tv_sandbox_rejected":
+                summary["recent_rejected_count"] += 1
+            if status == "blocked_by_runtime_lock":
+                summary["recent_blocked_count"] += 1
+            if skip == "signal_expired":
+                summary["recent_expired_count"] += 1
+        if tv_rows:
+            latest = tv_rows[0]
+            summary["last_tv_signal_time"] = latest.get("created_at")
+            summary["last_tv_signal_status"] = latest.get("status")
+            summary["last_tv_signal_skip_reason"] = latest.get("skip_reason")
 
     if not settings.tv_alert_observation_enabled:
         checks.append(

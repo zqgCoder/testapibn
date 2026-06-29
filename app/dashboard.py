@@ -2537,6 +2537,17 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
         reject_live_binance: "拒绝实盘",
         expected_symbols: "预期交易对",
         allowed_symbols: "允许交易对",
+        webhook_enabled: "Webhook 已启用",
+        require_position_strategy: "要求 position_strategy",
+        reject_expired: "拒绝过期信号",
+        max_age_seconds: "信号最大年龄(秒)",
+        last_tv_signal_time: "最近 TV 信号时间",
+        last_tv_signal_status: "最近 TV 信号状态",
+        last_tv_signal_skip_reason: "最近跳过原因",
+        recent_duplicate_count: "24h 重复信号",
+        recent_rejected_count: "24h 拒绝数",
+        recent_blocked_count: "24h Runtime 拦截",
+        recent_expired_count: "24h 过期信号",
       }};
       const summaryItems = Object.entries(summary).map(([k, v]) => {{
         const label = summaryLabels[k] || k;
@@ -3293,7 +3304,7 @@ def create_dashboard_router(
     ):
         guard(request, token, x_dashboard_token)
         try:
-            readiness = build_tv_alert_readiness(settings, app_version)
+            readiness = build_tv_alert_readiness(settings, app_version, journal_store)
         except Exception as exc:
             return JSONResponse(
                 content={
