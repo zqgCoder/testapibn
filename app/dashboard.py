@@ -15,6 +15,7 @@ from .tv_sandbox import binance_env_label, is_tv_execution_row
 if TYPE_CHECKING:
     from .binance_client import BinanceClient
     from .config import Settings
+    from .reconcile import SafetyReconcileService
     from .runtime_control import RuntimeControl
 
 
@@ -509,6 +510,7 @@ _HEALTH_ALERT_TITLES: dict[str, str] = {
     "api_protection": "API Token 保护",
     "runtime_status_permission": "Runtime 状态读取权限",
     "runtime_one_shot": "Runtime One-Shot 状态",
+    "safety_audit": "安全审计",
 }
 
 _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
@@ -644,12 +646,19 @@ def build_alerts(
     runtime_control: RuntimeControl,
     *,
     limit: int = 20,
+    reconcile_service: SafetyReconcileService | None = None,
 ) -> dict[str, Any]:
     from datetime import datetime, timezone
+
+    from .reconcile import alerts_from_reconcile_report
 
     cap = max(1, min(limit, 100))
     now_iso = datetime.now(timezone.utc).isoformat()
     alerts: list[dict[str, Any]] = []
+
+    if reconcile_service is not None:
+        reconcile_report = reconcile_service.get_latest_report()
+        alerts.extend(alerts_from_reconcile_report(reconcile_report, created_at=now_iso))
 
     overview = build_health_overview(settings, client, journal_store, trade_stats, runtime_control)
     for check in overview.get("checks") or []:
@@ -2757,6 +2766,9 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           ["Runtime 锁定", summary.runtime_locked ? "是" : "否"],
           ["当前持仓数", summary.open_position_count ?? "-"],
           ["条件单数", summary.algo_order_count ?? "-"],
+          ["安全审计", summary.reconcile_level || "-"],
+          ["未保护持仓", summary.reconcile_unprotected_position_count ?? "-"],
+          ["残留委托交易对", summary.reconcile_residual_order_symbol_count ?? "-"],
           ["最近执行数", summary.recent_execution_count ?? "-"],
           ["最近执行状态", summary.last_execution_status || "-", true],
           ["最近拒绝原因", summary.last_rejection_reason || "-", true],
@@ -2905,6 +2917,7 @@ def create_dashboard_router(
     client: BinanceClient,
     app_version: str,
     runtime_control: RuntimeControl,
+    reconcile_service: SafetyReconcileService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -3126,10 +3139,16 @@ def create_dashboard_router(
         x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
     ):
         guard(request, token, x_dashboard_token)
+        from .reconcile import merge_reconcile_into_health_overview
+
         try:
             overview = build_health_overview(
                 settings, client, journal_store, trade_stats, runtime_control
             )
+            if reconcile_service is not None:
+                overview = merge_reconcile_into_health_overview(
+                    overview, reconcile_service.get_latest_report()
+                )
         except Exception as exc:
             return JSONResponse(
                 content={
@@ -3151,6 +3170,34 @@ def create_dashboard_router(
             )
         return JSONResponse(content={"成功": True, "健康摘要": overview})
 
+    @router.get("/api/reconcile")
+    async def api_reconcile(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        if reconcile_service is None:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "level": "WARN",
+                    "提示": "安全审计服务未启用",
+                    "报告": None,
+                }
+            )
+        report = reconcile_service.get_latest_report()
+        if report is None:
+            return JSONResponse(
+                content={
+                    "成功": False,
+                    "level": "WARN",
+                    "提示": "尚未生成安全审计报告",
+                    "报告": None,
+                }
+            )
+        return JSONResponse(content={"成功": True, "报告": report})
+
     @router.get("/api/alerts")
     async def api_alerts(
         request: Request,
@@ -3167,6 +3214,7 @@ def create_dashboard_router(
                 trade_stats,
                 runtime_control,
                 limit=limit,
+                reconcile_service=reconcile_service,
             )
         except Exception as exc:
             return JSONResponse(
