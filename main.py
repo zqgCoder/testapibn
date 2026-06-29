@@ -31,6 +31,7 @@ from app.runtime_control import (
     verify_runtime_control_write_token,
     verify_runtime_read_token,
 )
+from app.reconcile import SafetyReconcileService
 from app.trader import Trader
 from app.tv_sandbox import is_tv_signal, validate_tv_payload
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
@@ -58,6 +59,7 @@ trade_stats = TradeStatsService(journal_store)
 runtime_store = RuntimeControlStore(settings.sqlite_path)
 runtime_control = RuntimeControl(settings, runtime_store)
 trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
+reconcile_service = SafetyReconcileService(settings, client, runtime_control)
 store = SignalStore(settings.sqlite_path)
 
 APP_VERSION = "1.13.0"
@@ -66,9 +68,21 @@ app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 
 app.include_router(
     create_dashboard_router(
-        settings, journal_store, trade_stats, client, APP_VERSION, runtime_control
+        settings, journal_store, trade_stats, client, APP_VERSION, runtime_control, reconcile_service
     )
 )
+
+
+@app.on_event("startup")
+async def startup_safety_audit() -> None:
+    try:
+        reconcile_service.run_audit(trigger="startup")
+        logger.info(
+            "Startup safety audit completed: level=%s",
+            (reconcile_service.get_latest_report() or {}).get("level"),
+        )
+    except Exception:
+        logger.exception("Startup safety audit failed unexpectedly")
 
 
 @app.exception_handler(RequestValidationError)
@@ -591,6 +605,49 @@ async def stats_rejections(
             "拒绝统计": rows,
         }
     )
+
+
+@app.get("/reconcile/status")
+async def reconcile_status(
+    control_token: str | None = Query(None),
+    token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+    x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+):
+    """返回最近一次只读安全审计报告。"""
+    verify_runtime_read_token(
+        settings,
+        control_token=control_token,
+        control_header=x_runtime_control_token,
+        dashboard_token=token,
+        dashboard_header=x_dashboard_token,
+    )
+    report = reconcile_service.get_latest_report()
+    if report is None:
+        return JSONResponse(
+            content={
+                "成功": False,
+                "level": "WARN",
+                "提示": "尚未生成安全审计报告，请等待服务启动审计完成或手动触发 POST /reconcile/run。",
+                "报告": None,
+            }
+        )
+    return JSONResponse(content={"成功": True, "报告": to_jsonable(report)})
+
+
+@app.post("/reconcile/run")
+async def reconcile_run(
+    control_token: str | None = Query(None),
+    x_runtime_control_token: str | None = Header(None, alias="X-Runtime-Control-Token"),
+):
+    """手动触发一次只读安全审计，不会下单、撤单、平仓或修改 Runtime。"""
+    verify_runtime_control_write_token(
+        settings,
+        control_token=control_token,
+        header_token=x_runtime_control_token,
+    )
+    report = reconcile_service.run_audit(trigger="manual")
+    return JSONResponse(content={"成功": True, "报告": to_jsonable(report)})
 
 
 @app.get("/runtime/status")
