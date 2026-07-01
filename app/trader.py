@@ -24,8 +24,9 @@ from .risk import (
 )
 from .storage import AccountRiskStore
 from .runtime_control import RuntimeControl
-from .schemas import TradingViewSignal, normalize_side, opposite_side
+from .schemas import TradingViewSignal, get_tp_price, normalize_side, normalize_signal_guard_prices, opposite_side
 from .tv_sandbox import build_tv_skip_result, is_tv_signal, validate_tv_policy
+from .tv_production import sync_signal_guard_prices
 
 logger = logging.getLogger(__name__)
 
@@ -909,6 +910,7 @@ class Trader:
         return True
 
     def prepare_plan(self, signal: TradingViewSignal) -> TradePlan:
+        signal = normalize_signal_guard_prices(signal)
         symbol = signal.symbol
         self._check_symbol_allowed(symbol)
 
@@ -999,10 +1001,10 @@ class Trader:
         symbol_rules = self.rules.get(plan.symbol)
         tp_quantities = allocate_tp_quantities(filled_qty, signal.tps, symbol_rules.market_qty_step)
         take_profits: list[tuple[Decimal, Decimal]] = []
-        for tp, qty in zip(signal.tps, tp_quantities):
+        for idx, (tp, qty) in enumerate(zip(signal.tps, tp_quantities)):
             if qty <= 0:
                 continue
-            take_profits.append((floor_to_step(tp.price, symbol_rules.price_tick), qty))
+            take_profits.append((floor_to_step(get_tp_price(tp, index=idx), symbol_rules.price_tick), qty))
         return replace(
             plan,
             quantity=filled_qty,
@@ -1351,6 +1353,14 @@ class Trader:
         signal_key: str,
         raw_payload: dict | None = None,
     ) -> dict:
+        payload = raw_payload or {}
+
+        def _with_norm(result: dict) -> dict:
+            meta = payload.get("tv_price_normalization")
+            if meta is not None:
+                result = {**result, "tv_price_normalization": meta}
+            return result
+
         if self.runtime_control is not None:
             blocked, runtime_summary = self.runtime_control.is_execution_blocked()
             if blocked:
@@ -1359,14 +1369,15 @@ class Trader:
                     signal_key,
                     runtime_summary,
                 )
-                return {
-                    "orders": {},
-                    "skipped": True,
-                    "skip_reason": "runtime_locked",
-                    "runtime_summary": runtime_summary,
-                }
+                return _with_norm(
+                    {
+                        "orders": {},
+                        "skipped": True,
+                        "skip_reason": "runtime_locked",
+                        "runtime_summary": runtime_summary,
+                    }
+                )
 
-        payload = raw_payload or {}
         if self.settings.tv_signal_sandbox_enabled and is_tv_signal(payload, self.settings):
             rejection = validate_tv_policy(payload, signal, self.settings, client=self.client)
             if rejection:
@@ -1376,14 +1387,15 @@ class Trader:
                     rejection.skip_reason,
                     rejection.message,
                 )
-                return build_tv_skip_result(rejection)
+                return _with_norm(build_tv_skip_result(rejection))
+            signal = sync_signal_guard_prices(signal, payload)
 
         plan = self.prepare_plan(signal)
         logger.info("Trade plan: %s", json.dumps(asdict(plan), default=str, ensure_ascii=False))
 
         if plan.dry_run:
             logger.warning("DRY_RUN active. No Binance orders submitted. Set ENABLE_TRADING=true to trade.")
-            return {"dry_run": True, "plan": asdict(plan)}
+            return _with_norm({"dry_run": True, "plan": asdict(plan)})
 
         account_risk_result = self.account_risk.check_before_entry(plan)
         if not account_risk_result.allowed:
@@ -1393,13 +1405,15 @@ class Trader:
                 account_risk_result.skip_reason,
                 AccountRiskGuard.summary_dict(account_risk_result),
             )
-            return {
-                "plan": asdict(plan),
-                "orders": {},
-                "skipped": True,
-                "skip_reason": account_risk_result.skip_reason,
-                "account_risk_summary": AccountRiskGuard.summary_dict(account_risk_result),
-            }
+            return _with_norm(
+                {
+                    "plan": asdict(plan),
+                    "orders": {},
+                    "skipped": True,
+                    "skip_reason": account_risk_result.skip_reason,
+                    "account_risk_summary": AccountRiskGuard.summary_dict(account_risk_result),
+                }
+            )
 
         responses: dict = {
             "plan": asdict(plan),
@@ -1410,14 +1424,14 @@ class Trader:
         should_continue = self._handle_existing_position(signal, plan, responses)
         if not should_continue:
             logger.info("Execution skipped safely: %s", json.dumps(responses, default=str, ensure_ascii=False))
-            return responses
+            return _with_norm(responses)
 
         responses["orders"]["leverage"] = self.client.change_leverage(plan.symbol, plan.leverage)
 
         entry_filled, effective_plan = self._submit_entry_order(signal, plan, responses)
         if not entry_filled:
             logger.info("Execution ended without entry fill: %s", json.dumps(responses, default=str, ensure_ascii=False))
-            return responses
+            return _with_norm(responses)
 
         self.account_risk.record_successful_open(effective_plan.symbol, effective_plan, signal_key)
 
@@ -1428,7 +1442,7 @@ class Trader:
         self._submit_protections_after_entry(effective_plan, responses)
 
         logger.info("Execution result: %s", json.dumps(responses, default=str, ensure_ascii=False))
-        return responses
+        return _with_norm(responses)
 
     def _position_row_for_symbol(self, symbol: str) -> dict | None:
         data = self.client.position_risk(symbol)

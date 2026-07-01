@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Literal
+from decimal import Decimal, InvalidOperation
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -15,6 +15,111 @@ EntryType = Literal["market", "limit", "MARKET", "LIMIT"]
 class TakeProfitLevel(BaseModel):
     price: Decimal = Field(gt=Decimal("0"), description="Take-profit trigger price")
     qty_pct: Decimal = Field(gt=Decimal("0"), le=Decimal("1"), description="Position fraction to close")
+
+
+def _tp_field_label(index: int | None) -> str:
+    return f"tps[{index}]" if index is not None else "tp"
+
+
+def get_tp_price(tp: Any, *, index: int | None = None) -> Decimal:
+    """Read TP price from TakeProfitLevel, dict, or attribute-style object."""
+    label = _tp_field_label(index)
+    if isinstance(tp, TakeProfitLevel):
+        return tp.price
+    if isinstance(tp, dict):
+        raw = tp.get("price")
+        if raw in {None, ""}:
+            raise ValueError(f"{label} 缺少 price 字段")
+        try:
+            price = Decimal(str(raw))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label}.price 无效: {raw!r}") from exc
+        if price <= 0:
+            raise ValueError(f"{label}.price 必须 > 0，当前为 {price}")
+        return price
+    raw = getattr(tp, "price", None)
+    if raw not in {None, ""}:
+        try:
+            price = Decimal(str(raw))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label}.price 无效: {raw!r}") from exc
+        if price <= 0:
+            raise ValueError(f"{label}.price 必须 > 0，当前为 {price}")
+        return price
+    raise ValueError(f"{label} 结构非法，需要包含 price 字段")
+
+
+def get_tp_qty_pct(tp: Any, *, index: int | None = None) -> Decimal:
+    """Read TP qty_pct from TakeProfitLevel, dict, or attribute-style object."""
+    label = _tp_field_label(index)
+    if isinstance(tp, TakeProfitLevel):
+        return tp.qty_pct
+    if isinstance(tp, dict):
+        raw = tp.get("qty_pct")
+        if raw in {None, ""}:
+            raise ValueError(f"{label} 缺少 qty_pct 字段")
+        try:
+            qty_pct = Decimal(str(raw))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label}.qty_pct 无效: {raw!r}") from exc
+        if qty_pct <= 0 or qty_pct > 1:
+            raise ValueError(f"{label}.qty_pct 必须在 (0, 1] 内，当前为 {qty_pct}")
+        return qty_pct
+    raw = getattr(tp, "qty_pct", None)
+    if raw not in {None, ""}:
+        try:
+            qty_pct = Decimal(str(raw))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label}.qty_pct 无效: {raw!r}") from exc
+        if qty_pct <= 0 or qty_pct > 1:
+            raise ValueError(f"{label}.qty_pct 必须在 (0, 1] 内，当前为 {qty_pct}")
+        return qty_pct
+    raise ValueError(f"{label} 结构非法，需要包含 qty_pct 字段")
+
+
+def coerce_take_profit_levels(tps: Any) -> list[TakeProfitLevel]:
+    """Normalize raw TradingView tps into validated TakeProfitLevel models."""
+    if not isinstance(tps, list):
+        raise ValueError("tps 必须是非空数组")
+    if len(tps) == 0:
+        raise ValueError("tps 必须是非空数组")
+    result: list[TakeProfitLevel] = []
+    for idx, item in enumerate(tps):
+        if isinstance(item, TakeProfitLevel):
+            result.append(item)
+            continue
+        if isinstance(item, dict):
+            try:
+                result.append(TakeProfitLevel.model_validate(item))
+            except Exception as exc:
+                raise ValueError(f"tps[{idx}] 校验失败: {exc}") from exc
+            continue
+        raise ValueError(f"tps[{idx}] 结构非法，需要 {{price, qty_pct}} 对象")
+    return result
+
+
+def coerce_decimal(raw: Any, *, field: str = "value") -> Decimal:
+    """Normalize JSON float/int/str guard prices into Decimal for risk math."""
+    if isinstance(raw, Decimal):
+        return raw
+    if raw in {None, ""}:
+        raise ValueError(f"{field} 不能为空")
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field} 无效: {raw!r}") from exc
+
+
+def normalize_signal_guard_prices(signal: TradingViewSignal) -> TradingViewSignal:
+    """Ensure sl/tps on a signal are Decimal-backed models after raw JSON sync."""
+    updates: dict[str, Any] = {}
+    if signal.sl is not None:
+        updates["sl"] = coerce_decimal(signal.sl, field="sl")
+    if signal.tps:
+        updates["tps"] = coerce_take_profit_levels(signal.tps)
+    if not updates:
+        return signal
+    return signal.model_copy(update=updates)
 
 
 class TradingViewSignal(BaseModel):
