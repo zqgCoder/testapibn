@@ -3,6 +3,9 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from .trader import Trader
+
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -2929,6 +2932,7 @@ def create_dashboard_router(
     app_version: str,
     runtime_control: RuntimeControl,
     reconcile_service: SafetyReconcileService | None = None,
+    trader: Trader | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -3379,5 +3383,18 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "TV云端Alert审计": audit})
+
+    if trader is not None:
+        from .dashboard_runtime_control import register_runtime_control_dashboard_routes
+
+        register_runtime_control_dashboard_routes(
+            router,
+            settings,
+            journal_store,
+            client,
+            trader,
+            runtime_control,
+            reconcile_service,
+        )
 
     return router

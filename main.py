@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.binance_client import BinanceClient
 from app.config import get_settings
@@ -71,9 +72,20 @@ APP_VERSION = "1.13.0"
 
 app = FastAPI(title="TradingView to Binance Futures Bot", version=APP_VERSION)
 
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
 app.include_router(
     create_dashboard_router(
-        settings, journal_store, trade_stats, client, APP_VERSION, runtime_control, reconcile_service
+        settings,
+        journal_store,
+        trade_stats,
+        client,
+        APP_VERSION,
+        runtime_control,
+        reconcile_service,
+        trader,
     )
 )
 
