@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Runtime Control · Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard_runtime_control.css" />
+</head>
+<body
+  data-refresh-runtime="__REFRESH_RUNTIME_SEC__"
+  data-refresh-data="__REFRESH_DATA_SEC__"
+  data-symbol="__DEFAULT_SYMBOL__"
+>
+  <div id="authGate" class="auth-gate hidden" role="alert">
+    <div class="auth-gate-box">
+      <h2>需要 Dashboard Token</h2>
+      <p>请通过 <code>/dashboard/runtime-control?token=你的密钥</code> 访问。</p>
+    </div>
+  </div>
+
+  <div id="appShell">
+  <header class="topbar">
+    <div>
+      <h1>Runtime Control</h1>
+      <p class="subtitle">Binance demo 持续测试人工控制面 · 仅 localhost</p>
+    </div>
+    <div class="topbar-actions">
+      <button type="button" class="btn btn-secondary" id="btnRefreshAll">立即刷新</button>
+      <a class="btn btn-link" href="/dashboard" id="linkMainDashboard">主 Dashboard</a>
+    </div>
+  </header>
+
+  <div id="errorBanner" class="error-banner hidden" role="alert"></div>
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <main class="layout">
+    <section class="panel" id="panel-runtime">
+      <div class="panel-head">
+        <h2>运行状态</h2>
+        <span class="badge" id="runtimeLockBadge">—</span>
+      </div>
+      <div class="kv-grid" id="runtimeStatusGrid"></div>
+      <div class="actions-row">
+        <button type="button" class="btn btn-warn" id="btnLock">锁定 Runtime</button>
+      </div>
+      <div class="subpanel">
+        <h3>One-Shot 放行（下一条 TV 信号）</h3>
+        <div class="form-grid">
+          <label>
+            TTL 秒数 (30–3600)
+            <input type="number" id="oneShotTtl" min="30" max="3600" value="300" />
+          </label>
+          <label class="span-2">
+            原因
+            <input type="text" id="oneShotReason" maxlength="500" placeholder="browser one-shot unlock" />
+          </label>
+        </div>
+        <button type="button" class="btn btn-primary" id="btnUnlockOnce">One-Shot Unlock</button>
+        <p class="hint">不提供普通长期 Unlock，避免误操作。</p>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-symbol">
+      <div class="panel-head">
+        <h2><span id="symbolLabel">__DEFAULT_SYMBOL__</span> 状态</h2>
+      </div>
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="positions">持仓</button>
+        <button type="button" class="tab" data-tab="algo">条件单</button>
+        <button type="button" class="tab" data-tab="open">普通委托</button>
+      </div>
+      <pre class="data-view" id="symbolDataView">加载中…</pre>
+      <div class="actions-row danger-zone">
+        <button type="button" class="btn btn-danger" id="btnClose">⚠ 平仓 BTCUSDT</button>
+        <button type="button" class="btn btn-danger-outline" id="btnCleanup">清理挂单</button>
+      </div>
+      <p class="danger-hint">平仓将市价关闭持仓并清理保护单，仅 demo 环境可用。操作不可撤销。</p>
+    </section>
+
+    <section class="panel" id="panel-reconcile">
+      <div class="panel-head">
+        <h2>安全审计 Reconcile</h2>
+      </div>
+      <button type="button" class="btn btn-secondary" id="btnReconcile">运行 Reconcile</button>
+      <div class="kv-grid" id="reconcileSummary"></div>
+    </section>
+
+    <section class="panel panel-wide" id="panel-journal">
+      <div class="panel-head">
+        <h2>最近 5 条 Journal Executions</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>编号</th>
+              <th>signal_id</th>
+              <th>symbol</th>
+              <th>side</th>
+              <th>status</th>
+              <th>skip_reason</th>
+              <th>qty</th>
+              <th>entry_price</th>
+              <th>leverage</th>
+              <th>created_at</th>
+            </tr>
+          </thead>
+          <tbody id="journalBody">
+            <tr><td colspan="10" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Runtime 状态每 <strong id="labelRefreshRuntime">5</strong> 秒刷新</span>
+    <span>持仓/委托/Journal 每 <strong id="labelRefreshData">10</strong> 秒刷新</span>
+  </footer>
+  </div>
+
+  <script src="/static/dashboard_runtime_control.js"></script>
+</body>
+</html>
