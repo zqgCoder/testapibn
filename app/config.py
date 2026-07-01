@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     tv_signal_max_tp_count: int = Field(default=5, alias="TV_SIGNAL_MAX_TP_COUNT")
     tv_signal_min_stop_pct: float = Field(default=0.25, alias="TV_SIGNAL_MIN_STOP_PCT")
     tv_signal_min_tp_pct: float = Field(default=0.25, alias="TV_SIGNAL_MIN_TP_PCT")
+    tv_signal_auto_normalize_guard_prices: bool = Field(
+        default=True, alias="TV_SIGNAL_AUTO_NORMALIZE_GUARD_PRICES"
+    )
+    tv_signal_guard_distance_buffer_pct: float = Field(
+        default=0.05, alias="TV_SIGNAL_GUARD_DISTANCE_BUFFER_PCT"
+    )
+    tv_signal_distance_epsilon: float = Field(default=0.000001, alias="TV_SIGNAL_DISTANCE_EPSILON")
 
     # ===== V6.0 TradingView Alert Observation =====
     tv_alert_observation_enabled: bool = Field(default=True, alias="TV_ALERT_OBSERVATION_ENABLED")
@@ -261,6 +268,10 @@ class Settings(BaseSettings):
             raise RuntimeError("TV_SIGNAL_MIN_STOP_PCT must be between 0 and 10")
         if self.tv_signal_min_tp_pct < 0 or self.tv_signal_min_tp_pct > 10:
             raise RuntimeError("TV_SIGNAL_MIN_TP_PCT must be between 0 and 10")
+        if self.tv_signal_guard_distance_buffer_pct < 0 or self.tv_signal_guard_distance_buffer_pct > 10:
+            raise RuntimeError("TV_SIGNAL_GUARD_DISTANCE_BUFFER_PCT must be between 0 and 10")
+        if self.tv_signal_distance_epsilon < 0 or self.tv_signal_distance_epsilon > 0.01:
+            raise RuntimeError("TV_SIGNAL_DISTANCE_EPSILON must be between 0 and 0.01")
 
 
 @lru_cache(maxsize=1)
