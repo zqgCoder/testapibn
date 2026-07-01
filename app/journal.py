@@ -401,7 +401,7 @@ class TradeJournal:
                     "position_policy": (result or {}).get("position_policy") or signal.position_policy,
                     "status": ExecutionStatus.FAILED,
                     "skip_reason": (result or {}).get("skip_reason"),
-                    "error_message": str(exc)[:2000],
+                    "error_message": f"{type(exc).__name__}: {exc}"[:2000],
                     "planned_qty": _decimal_str(plan.get("quantity")),
                     "filled_qty": None,
                     "entry_price": _decimal_str(plan.get("entry_ref_price")),

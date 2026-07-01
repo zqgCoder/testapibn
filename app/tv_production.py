@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-from .schemas import TakeProfitLevel, TradingViewSignal, normalize_side
+from .schemas import TakeProfitLevel, TradingViewSignal, coerce_decimal, coerce_take_profit_levels, get_tp_price, normalize_side
 from .tv_sandbox import TvSandboxRejection
 
 if TYPE_CHECKING:
@@ -96,6 +96,153 @@ def _reference_price_from_payload(raw_payload: dict[str, Any], signal: TradingVi
     if signal.limit_price is not None and signal.limit_price > 0:
         return signal.limit_price
     return None
+
+
+def _close_reference_price(raw_payload: dict[str, Any]) -> Decimal | None:
+    value = _decimal_value(raw_payload.get("close"))
+    if value is not None and value > 0:
+        return value
+    return None
+
+
+def _distance_pct(ref_price: Decimal, price: Decimal) -> Decimal:
+    return abs(ref_price - price) / ref_price
+
+
+def _pct_display(distance_ratio: Decimal) -> float:
+    return round(float(distance_ratio * Decimal("100")), 6)
+
+
+def _price_display(value: Decimal) -> float:
+    return float(format(value, "f"))
+
+
+def _needs_distance_normalize(distance: Decimal, min_pct: Decimal, epsilon: Decimal) -> bool:
+    return distance <= min_pct + epsilon
+
+
+def normalize_tv_guard_prices(
+    raw_payload: dict[str, Any],
+    settings: Settings,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Auto-push SL/TP to min distance + buffer when direction is correct but too close."""
+    meta: dict[str, Any] = {
+        "enabled": bool(settings.tv_signal_auto_normalize_guard_prices),
+        "adjusted": False,
+    }
+    if not settings.tv_signal_auto_normalize_guard_prices:
+        return raw_payload, meta
+
+    ref_price = _close_reference_price(raw_payload)
+    if ref_price is None:
+        return raw_payload, meta
+
+    side_raw = raw_payload.get("side")
+    if side_raw in {None, ""}:
+        return raw_payload, meta
+    try:
+        side = normalize_side(str(side_raw))
+    except ValueError:
+        return raw_payload, meta
+
+    min_stop_pct = Decimal(str(settings.tv_signal_min_stop_pct)) / Decimal("100")
+    min_tp_pct = Decimal(str(settings.tv_signal_min_tp_pct)) / Decimal("100")
+    buffer_pct = Decimal(str(settings.tv_signal_guard_distance_buffer_pct)) / Decimal("100")
+    epsilon = Decimal(str(settings.tv_signal_distance_epsilon))
+    target_stop_pct = min_stop_pct + buffer_pct
+    target_tp_pct = min_tp_pct + buffer_pct
+
+    meta.update(
+        {
+            "ref_price": _price_display(ref_price),
+            "min_stop_pct": float(settings.tv_signal_min_stop_pct),
+            "min_tp_pct": float(settings.tv_signal_min_tp_pct),
+            "buffer_pct": float(settings.tv_signal_guard_distance_buffer_pct),
+        }
+    )
+
+    updated = dict(raw_payload)
+    adjustments: list[dict[str, Any]] = []
+
+    sl = _decimal_value(raw_payload.get("sl"))
+    if sl is not None and sl > 0:
+        if side == "BUY":
+            if sl < ref_price:
+                old_distance = (ref_price - sl) / ref_price
+                if _needs_distance_normalize(old_distance, min_stop_pct, epsilon):
+                    new_sl = ref_price * (Decimal("1") - target_stop_pct)
+                    updated["sl"] = _price_display(new_sl)
+                    adjustments.append(
+                        {
+                            "field": "sl",
+                            "old": _price_display(sl),
+                            "new": _price_display(new_sl),
+                            "old_distance_pct": _pct_display(old_distance),
+                            "new_distance_pct": _pct_display(target_stop_pct),
+                        }
+                    )
+        elif sl > ref_price:
+            old_distance = (sl - ref_price) / ref_price
+            if _needs_distance_normalize(old_distance, min_stop_pct, epsilon):
+                new_sl = ref_price * (Decimal("1") + target_stop_pct)
+                updated["sl"] = _price_display(new_sl)
+                adjustments.append(
+                    {
+                        "field": "sl",
+                        "old": _price_display(sl),
+                        "new": _price_display(new_sl),
+                        "old_distance_pct": _pct_display(old_distance),
+                        "new_distance_pct": _pct_display(target_stop_pct),
+                    }
+                )
+
+    tps_raw = raw_payload.get("tps")
+    if isinstance(tps_raw, list):
+        new_tps: list[Any] = []
+        for idx, item in enumerate(tps_raw):
+            if not isinstance(item, dict):
+                new_tps.append(item)
+                continue
+            item_copy = dict(item)
+            tp_price = _decimal_value(item.get("price"))
+            if tp_price is not None and tp_price > 0:
+                if side == "BUY" and tp_price > ref_price:
+                    old_distance = (tp_price - ref_price) / ref_price
+                    if _needs_distance_normalize(old_distance, min_tp_pct, epsilon):
+                        new_tp = ref_price * (Decimal("1") + target_tp_pct)
+                        item_copy["price"] = _price_display(new_tp)
+                        adjustments.append(
+                            {
+                                "field": f"tps[{idx}].price",
+                                "old": _price_display(tp_price),
+                                "new": _price_display(new_tp),
+                                "old_distance_pct": _pct_display(old_distance),
+                                "new_distance_pct": _pct_display(target_tp_pct),
+                            }
+                        )
+                elif side == "SELL" and tp_price < ref_price:
+                    old_distance = (ref_price - tp_price) / ref_price
+                    if _needs_distance_normalize(old_distance, min_tp_pct, epsilon):
+                        new_tp = ref_price * (Decimal("1") - target_tp_pct)
+                        item_copy["price"] = _price_display(new_tp)
+                        adjustments.append(
+                            {
+                                "field": f"tps[{idx}].price",
+                                "old": _price_display(tp_price),
+                                "new": _price_display(new_tp),
+                                "old_distance_pct": _pct_display(old_distance),
+                                "new_distance_pct": _pct_display(target_tp_pct),
+                            }
+                        )
+            new_tps.append(item_copy)
+        updated["tps"] = new_tps
+
+    if adjustments:
+        meta["adjusted"] = True
+        meta["reason"] = "guard_price_distance_too_close"
+        meta["adjustments"] = adjustments
+
+    return updated, meta
 
 
 def validate_position_strategy(raw_payload: dict[str, Any], settings: Settings) -> TvSandboxRejection | None:
@@ -203,15 +350,53 @@ def validate_tps_qty_pct(raw_payload: dict[str, Any], settings: Settings) -> TvS
     return None
 
 
+def apply_tv_guard_price_normalization(raw_payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Normalize SL/TP in-place on raw_payload; return normalization metadata."""
+    normalized, meta = normalize_tv_guard_prices(raw_payload, settings)
+    if normalized.get("sl") is not None:
+        raw_payload["sl"] = normalized["sl"]
+    if "tps" in normalized:
+        raw_payload["tps"] = normalized["tps"]
+    if meta.get("enabled"):
+        raw_payload["tv_price_normalization"] = meta
+    return meta
+
+
+def sync_signal_guard_prices(signal: TradingViewSignal, raw_payload: dict[str, Any]) -> TradingViewSignal:
+    """Apply normalized sl/tps from raw_payload onto the TradingViewSignal model."""
+    updates: dict[str, Any] = {}
+    if raw_payload.get("sl") is not None:
+        updates["sl"] = coerce_decimal(raw_payload["sl"], field="sl")
+    if raw_payload.get("tps") is not None:
+        updates["tps"] = coerce_take_profit_levels(raw_payload["tps"])
+    if not updates:
+        return signal
+    return signal.model_copy(update=updates)
+
+
+def _tp_prices_from_payload(raw_payload: dict[str, Any]) -> list[tuple[int, Decimal]]:
+    rows: list[tuple[int, Decimal]] = []
+    tps = raw_payload.get("tps")
+    if not isinstance(tps, list):
+        return rows
+    for idx, item in enumerate(tps):
+        if not isinstance(item, dict):
+            continue
+        price = _decimal_value(item.get("price"))
+        if price is not None and price > 0:
+            rows.append((idx, price))
+    return rows
+
+
 def validate_sl_tp_levels(
     raw_payload: dict[str, Any],
     signal: TradingViewSignal,
     settings: Settings,
     client: BinanceClient | None,
 ) -> TvSandboxRejection | None:
-    sl = signal.sl
-    if sl is None:
-        sl = _decimal_value(raw_payload.get("sl"))
+    sl = _decimal_value(raw_payload.get("sl"))
+    if sl is None and signal.sl is not None:
+        sl = signal.sl
     if sl is None or sl <= 0:
         return TvSandboxRejection(
             skip_reason="tv_payload_invalid",
@@ -219,7 +404,9 @@ def validate_sl_tp_levels(
             invalid_fields=["sl"],
         )
 
-    ref_price = _reference_price_from_payload(raw_payload, signal)
+    ref_price = _close_reference_price(raw_payload)
+    if ref_price is None:
+        ref_price = _reference_price_from_payload(raw_payload, signal)
     if ref_price is None:
         if client is None:
             return TvSandboxRejection(
@@ -246,17 +433,25 @@ def validate_sl_tp_levels(
         )
 
     invalid_fields: list[str] = []
+    tp_levels = _tp_prices_from_payload(raw_payload)
+    if not tp_levels and signal.tps:
+        for idx, tp in enumerate(signal.tps):
+            try:
+                tp_levels.append((idx, get_tp_price(tp, index=idx)))
+            except ValueError:
+                invalid_fields.append(f"tps[{idx}].price")
+
     if side == "BUY":
         if sl >= ref_price:
             invalid_fields.append("sl")
-        for idx, tp in enumerate(signal.tps):
-            if tp.price <= ref_price:
+        for idx, tp_price in tp_levels:
+            if tp_price <= ref_price:
                 invalid_fields.append(f"tps[{idx}].price")
     else:
         if sl <= ref_price:
             invalid_fields.append("sl")
-        for idx, tp in enumerate(signal.tps):
-            if tp.price >= ref_price:
+        for idx, tp_price in tp_levels:
+            if tp_price >= ref_price:
                 invalid_fields.append(f"tps[{idx}].price")
 
     if invalid_fields:
@@ -269,10 +464,22 @@ def validate_sl_tp_levels(
             invalid_fields=invalid_fields,
         )
 
+    apply_tv_guard_price_normalization(raw_payload, settings)
+
+    sl = _decimal_value(raw_payload.get("sl")) or sl
+    tp_levels = _tp_prices_from_payload(raw_payload)
+    if not tp_levels and signal.tps:
+        for idx, tp in enumerate(signal.tps):
+            try:
+                tp_levels.append((idx, get_tp_price(tp, index=idx)))
+            except ValueError:
+                invalid_fields.append(f"tps[{idx}].price")
+
     min_stop_pct = Decimal(str(settings.tv_signal_min_stop_pct)) / Decimal("100")
     min_tp_pct = Decimal(str(settings.tv_signal_min_tp_pct)) / Decimal("100")
+    epsilon = Decimal(str(settings.tv_signal_distance_epsilon))
     sl_distance = abs(ref_price - sl) / ref_price
-    if sl_distance < min_stop_pct:
+    if sl_distance <= min_stop_pct + epsilon:
         return TvSandboxRejection(
             skip_reason="tv_payload_invalid",
             message=(
@@ -282,9 +489,9 @@ def validate_sl_tp_levels(
             invalid_fields=["sl"],
         )
 
-    for idx, tp in enumerate(signal.tps):
-        tp_distance = abs(ref_price - tp.price) / ref_price
-        if tp_distance < min_tp_pct:
+    for idx, tp_price in tp_levels:
+        tp_distance = abs(ref_price - tp_price) / ref_price
+        if tp_distance <= min_tp_pct + epsilon:
             return TvSandboxRejection(
                 skip_reason="tv_payload_invalid",
                 message=(

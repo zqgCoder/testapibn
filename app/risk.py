@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
 
 from .exchange_rules import SymbolRules, floor_to_step
-from .schemas import TakeProfitLevel
+from .schemas import TakeProfitLevel, get_tp_price, get_tp_qty_pct
 
 
 @dataclass(frozen=True)
@@ -49,19 +49,26 @@ def calculate_notional(margin_usdt: Decimal | None, notional_usdt: Decimal | Non
     return margin_usdt * Decimal(leverage)
 
 
-def validate_price_levels(side: str, entry_price: Decimal, sl: Decimal | None, tps: list[TakeProfitLevel]) -> None:
+def validate_price_levels(
+    side: str,
+    entry_price: Decimal,
+    sl: Decimal | None,
+    tps: list[TakeProfitLevel] | list[dict] | list,
+) -> None:
     if side == "BUY":
         if sl is not None and sl >= entry_price:
             raise ValueError(f"做多止损价必须低于当前价：entry={entry_price}, sl={sl}")
-        for tp in tps:
-            if tp.price <= entry_price:
-                raise ValueError(f"做多止盈价必须高于当前价：entry={entry_price}, tp={tp.price}")
+        for idx, tp in enumerate(tps):
+            tp_price = get_tp_price(tp, index=idx)
+            if tp_price <= entry_price:
+                raise ValueError(f"做多止盈价必须高于当前价：entry={entry_price}, tp={tp_price}")
     else:
         if sl is not None and sl <= entry_price:
             raise ValueError(f"做空止损价必须高于当前价：entry={entry_price}, sl={sl}")
-        for tp in tps:
-            if tp.price >= entry_price:
-                raise ValueError(f"做空止盈价必须低于当前价：entry={entry_price}, tp={tp.price}")
+        for idx, tp in enumerate(tps):
+            tp_price = get_tp_price(tp, index=idx)
+            if tp_price >= entry_price:
+                raise ValueError(f"做空止盈价必须低于当前价：entry={entry_price}, tp={tp_price}")
 
 
 def allocate_tp_quantities(total_qty: Decimal, tps: list[TakeProfitLevel], step: Decimal) -> list[Decimal]:
@@ -72,7 +79,7 @@ def allocate_tp_quantities(total_qty: Decimal, tps: list[TakeProfitLevel], step:
     if not tps:
         return []
 
-    total_pct = sum(tp.qty_pct for tp in tps)
+    total_pct = sum(get_tp_qty_pct(tp, index=idx) for idx, tp in enumerate(tps))
     quantities: list[Decimal] = []
     used = Decimal("0")
 
@@ -81,7 +88,7 @@ def allocate_tp_quantities(total_qty: Decimal, tps: list[TakeProfitLevel], step:
         if is_last and total_pct == Decimal("1"):
             qty = floor_to_step(total_qty - used, step)
         else:
-            qty = floor_to_step(total_qty * tp.qty_pct, step)
+            qty = floor_to_step(total_qty * get_tp_qty_pct(tp, index=idx), step)
         quantities.append(qty)
         used += qty
 
@@ -177,10 +184,10 @@ def build_manual_trade_plan(
 
     tp_quantities = allocate_tp_quantities(quantity, tps, rules.market_qty_step)
     take_profits = []
-    for tp, qty in zip(tps, tp_quantities):
+    for idx, (tp, qty) in enumerate(zip(tps, tp_quantities)):
         if qty <= 0:
             continue
-        take_profits.append((floor_to_step(tp.price, rules.price_tick), qty))
+        take_profits.append((floor_to_step(get_tp_price(tp, index=idx), rules.price_tick), qty))
 
     actual_margin = margin_usdt if margin_usdt is not None else floor_to_step(notional / Decimal(leverage), Decimal("0.00000001"))
 
@@ -267,10 +274,10 @@ def build_risk_based_trade_plan(
 
     tp_quantities = allocate_tp_quantities(quantity, tps, rules.market_qty_step)
     take_profits = []
-    for tp, qty in zip(tps, tp_quantities):
+    for idx, (tp, qty) in enumerate(zip(tps, tp_quantities)):
         if qty <= 0:
             continue
-        take_profits.append((floor_to_step(tp.price, rules.price_tick), qty))
+        take_profits.append((floor_to_step(get_tp_price(tp, index=idx), rules.price_tick), qty))
 
     actual_margin = floor_to_step(notional / Decimal(leverage), Decimal("0.00000001"))
 

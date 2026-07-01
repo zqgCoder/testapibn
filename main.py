@@ -33,8 +33,12 @@ from app.runtime_control import (
 )
 from app.reconcile import SafetyReconcileService
 from app.trader import Trader
-from app.tv_sandbox import is_tv_signal, validate_tv_payload, validate_tv_policy
-from app.tv_production import apply_position_strategy, position_strategy_invalid_rejection
+from app.tv_sandbox import is_tv_signal, validate_tv_payload
+from app.tv_production import (
+    apply_position_strategy,
+    apply_tv_guard_price_normalization,
+    position_strategy_invalid_rejection,
+)
 from app.zh import algo_order_to_chinese, order_to_chinese, position_to_chinese, to_jsonable, trade_plan_raw, trade_plan_to_chinese
 
 settings = get_settings()
@@ -422,6 +426,15 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
             return _tv_rejection_response(signal_key, payload_rejection)
 
     if tv_signal:
+        tv_price_normalization = apply_tv_guard_price_normalization(raw_payload, settings)
+        if tv_price_normalization.get("adjusted"):
+            logger.info(
+                "TV guard price normalized: signal_id=%s adjustments=%s",
+                raw_payload.get("signal_id"),
+                tv_price_normalization.get("adjustments"),
+            )
+
+    if tv_signal:
         try:
             raw_payload = apply_position_strategy(raw_payload, settings)
         except ValueError:
@@ -470,12 +483,6 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
                 "提示": "该信号已经接收过，已被防重复机制拦截",
             },
         )
-
-    if settings.tv_signal_sandbox_enabled and tv_signal:
-        policy_rejection = validate_tv_policy(raw_payload, signal, settings, client=client)
-        if policy_rejection is not None:
-            _persist_tv_rejection(signal_key, raw_payload, policy_rejection)
-            return _tv_rejection_response(signal_key, policy_rejection)
 
     store.mark_received(signal_key, signal.symbol, side, json.dumps(raw_payload, default=str, ensure_ascii=False))
     background_tasks.add_task(execute_background, signal, signal_key, raw_payload)
