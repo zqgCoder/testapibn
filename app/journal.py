@@ -15,6 +15,7 @@ class ExecutionStatus:
     BLOCKED_BY_RUNTIME_LOCK = "blocked_by_runtime_lock"
     SKIPPED_BY_POSITION_POLICY = "skipped_by_position_policy"
     TV_SANDBOX_REJECTED = "tv_sandbox_rejected"
+    LIVE_GUARD_REJECTED = "live_guard_rejected"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
     PROTECTION_FAILED = "protection_failed"
@@ -34,6 +35,7 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK: "运行锁定拒绝",
     ExecutionStatus.SKIPPED_BY_POSITION_POLICY: "持仓策略跳过",
     ExecutionStatus.TV_SANDBOX_REJECTED: "TV沙盒拒绝",
+    ExecutionStatus.LIVE_GUARD_REJECTED: "Live Guard 拒绝",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
@@ -52,10 +54,21 @@ def _filled_qty_from_result(result: dict) -> Decimal:
         return Decimal("0")
 
 
+def _error_message_from_result(result: dict) -> str | None:
+    for key in ("live_guard", "tv_sandbox"):
+        block = result.get(key) or {}
+        message = block.get("message")
+        if message:
+            return str(message)[:2000]
+    return None
+
+
 def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
     if skip_reason == "runtime_locked":
         return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
+    if skip_reason and str(skip_reason).startswith("live_guard_"):
+        return ExecutionStatus.LIVE_GUARD_REJECTED
     if skip_reason == "duplicate_signal":
         return ExecutionStatus.TV_SANDBOX_REJECTED
     if skip_reason == "signal_expired":
@@ -243,7 +256,7 @@ class TradeJournal:
                     "position_policy": result.get("position_policy") or signal.position_policy,
                     "status": status,
                     "skip_reason": result.get("skip_reason"),
-                    "error_message": None,
+                    "error_message": _error_message_from_result(result),
                     "planned_qty": _decimal_str(plan.get("quantity")),
                     "filled_qty": entry_summary.get("filled_qty") or _decimal_str(_filled_qty_from_result(result)),
                     "entry_price": entry_summary.get("latest_price_used") or _decimal_str(plan.get("entry_ref_price")),

@@ -522,6 +522,7 @@ _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
     "blocked_by_account_risk": ("WARN", "账户风控拒绝"),
     "blocked_by_runtime_lock": ("WARN", "信号被 Runtime Lock 拦截"),
     "tv_sandbox_rejected": ("WARN", "TradingView 信号被沙盒拒绝"),
+    "live_guard_rejected": ("WARN", "Live Guard 拒绝"),
     "entry_not_filled": ("WARN", "信号未成交"),
     "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
 }
@@ -1349,9 +1350,77 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         {
             "name": "dashboard_readonly_guarantee",
             "level": "OK",
-            "message": "Dashboard 仅展示监控信息，不提供交易操作按钮",
+            "message": "Dashboard 主页面为只读监控；写操作请使用 Runtime Control 控制面",
         }
     )
+
+    from .live_guard import confirm_phrase_valid, is_live_binance_env
+
+    if is_live_binance_env(settings):
+        if settings.live_canary_mode:
+            checks.append(
+                {
+                    "name": "live_canary_mode",
+                    "level": "WARN",
+                    "message": "LIVE_CANARY_MODE=true：实盘 canary 安全闸门生效，本版默认不执行实盘交易",
+                }
+            )
+        if not settings.live_trading_enabled:
+            checks.append(
+                {
+                    "name": "live_trading_enabled",
+                    "level": "OK",
+                    "message": "LIVE_TRADING_ENABLED=false，所有实盘执行将被 Live Guard 拒绝",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "live_trading_enabled",
+                    "level": "ERROR",
+                    "message": "LIVE_TRADING_ENABLED=true，实盘执行可能被允许（仍受其它 Live Guard 约束）",
+                }
+            )
+        if not confirm_phrase_valid(settings):
+            checks.append(
+                {
+                    "name": "live_confirm_phrase",
+                    "level": "ERROR",
+                    "message": "LIVE_CONFIRM_PHRASE 未配置或与 LIVE_EXPECTED_CONFIRM_PHRASE 不匹配",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "live_confirm_phrase",
+                    "level": "OK",
+                    "message": "LIVE_CONFIRM_PHRASE 校验通过",
+                }
+            )
+        if settings.live_reject_tradingview_by_default:
+            checks.append(
+                {
+                    "name": "live_reject_tradingview",
+                    "level": "OK",
+                    "message": "LIVE_REJECT_TRADINGVIEW_BY_DEFAULT=true，TradingView 信号在实盘默认拒绝",
+                }
+            )
+        if settings.live_require_one_shot:
+            checks.append(
+                {
+                    "name": "live_require_one_shot",
+                    "level": "OK",
+                    "message": "LIVE_REQUIRE_ONE_SHOT=true，实盘执行需 Runtime one-shot 放行",
+                }
+            )
+        if settings.live_force_runtime_locked_on_startup:
+            checks.append(
+                {
+                    "name": "live_force_runtime_locked_on_startup",
+                    "level": "OK",
+                    "message": "LIVE_FORCE_RUNTIME_LOCKED_ON_STARTUP=true，服务启动时会强制 Runtime locked",
+                }
+            )
 
     summary = {
         "app_version": app_version,
@@ -1387,6 +1456,13 @@ def build_risk_config_inspector(settings: Settings, app_version: str) -> dict[st
         "tv_cloud_payload_invalid_warn": settings.tv_cloud_payload_invalid_warn,
         "tv_cloud_unauthorized_warn": settings.tv_cloud_unauthorized_warn,
         "tv_cloud_runtime_lock_warn": settings.tv_cloud_runtime_lock_warn,
+        "live_canary_mode": settings.live_canary_mode,
+        "live_trading_enabled": settings.live_trading_enabled,
+        "live_allowed_symbols": sorted(settings.live_allowed_symbol_set),
+        "live_max_risk_usdt": settings.live_max_risk_usdt,
+        "live_max_margin_usdt": settings.live_max_margin_usdt,
+        "live_max_position_notional_usdt": settings.live_max_position_notional_usdt,
+        "live_reject_tradingview_by_default": settings.live_reject_tradingview_by_default,
     }
 
     return {
@@ -2008,7 +2084,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       const s = String(status || "");
       if (s === "protected") return lvlBadge("OK", s);
       if (s === "failed" || s === "protection_failed") return lvlBadge("ERROR", s);
-      if (s.startsWith("blocked_") || s === "tv_sandbox_rejected" || s === "entry_not_filled" || s === "skipped_by_position_policy") {{
+      if (s.startsWith("blocked_") || s === "tv_sandbox_rejected" || s === "live_guard_rejected" || s === "entry_not_filled" || s === "skipped_by_position_policy") {{
         return lvlBadge("WARN", s);
       }}
       return lvlBadge("INFO", s || "-");
@@ -3383,6 +3459,18 @@ def create_dashboard_router(
                 status_code=200,
             )
         return JSONResponse(content={"成功": True, "TV云端Alert审计": audit})
+
+    @router.get("/api/live-guard/status")
+    async def api_live_guard_status(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        guard(request, token, x_dashboard_token)
+        from .live_guard import build_live_guard_status
+
+        payload = build_live_guard_status(settings, runtime_control)
+        return JSONResponse(content={"成功": True, "Live Guard": payload})
 
     if trader is not None:
         from .dashboard_runtime_control import register_runtime_control_dashboard_routes
