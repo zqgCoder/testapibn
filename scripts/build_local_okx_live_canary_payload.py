@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Build local OKX minimal open-close canary payload (v6.5.3).
+"""Build local OKX minimal open-close canary payload (v6.5.3+ / v6.5.4 guard).
 
 Never prints WEBHOOK_SECRET or payload body.
+Rejects payload generation when instrument sizing is infeasible for configured limits.
 """
 
 from __future__ import annotations
@@ -18,8 +19,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import Settings
-from app.exchanges.okx_sizing import OkxInstrumentMeta, compute_minimal_contract_sz
 from app.exchanges.okx_symbols import symbol_to_inst_id
+from app.okx_canary_feasibility import (
+    evaluate_okx_canary_feasibility,
+    fetch_public_instrument,
+    format_decimal,
+    print_feasibility_rejection,
+)
 from app.okx_guard import okx_confirm_phrase_valid
 
 DEFAULT_FILENAME = "_v653_okx_live_canary_payload.json"
@@ -52,7 +58,7 @@ def build_payload(
     return {
         "secret": settings.webhook_secret,
         "source": "local_canary",
-        "signal_id": f"V653-OKX-CANARY-{ts}",
+        "signal_id": f"V654-OKX-CANARY-{ts}",
         "symbol": symbol.strip().upper(),
         "side": "buy",
         "entry_type": "market",
@@ -64,25 +70,8 @@ def build_payload(
     }
 
 
-def estimate_sz_summary(close: Decimal, margin_usdt: Decimal) -> tuple[Decimal, Decimal, Decimal]:
-    meta = OkxInstrumentMeta(
-        inst_id="BTC-USDT-SWAP",
-        inst_type="SWAP",
-        lot_sz=Decimal("1"),
-        min_sz=Decimal("1"),
-        ct_val=Decimal("0.01"),
-        ct_mult=Decimal("1"),
-        tick_sz=Decimal("0.1"),
-    )
-    return compute_minimal_contract_sz(
-        meta,
-        mark_price=close,
-        margin_usdt=margin_usdt,
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build OKX minimal canary payload (v6.5.3)")
+    parser = argparse.ArgumentParser(description="Build OKX minimal canary payload (v6.5.4 guard)")
     parser.add_argument("--close", required=True, help="BTCUSDT reference mark/close price")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--margin-usdt", default="20")
@@ -103,6 +92,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {env_error}", file=sys.stderr)
         return 1
 
+    inst_id = symbol_to_inst_id(args.symbol)
+    max_notional = Decimal(str(settings.okx_max_position_notional_usdt))
+
+    try:
+        meta = fetch_public_instrument(settings, inst_id)
+    except Exception as exc:
+        print(f"ERROR: failed to fetch instrument metadata: {exc}", file=sys.stderr)
+        return 1
+
+    feasibility = evaluate_okx_canary_feasibility(
+        inst_id=inst_id,
+        meta=meta,
+        mark_price=close,
+        margin_usdt=margin_usdt,
+        max_notional_usdt=max_notional,
+        leverage=args.leverage,
+    )
+    if not feasibility.feasible:
+        print_feasibility_rejection(feasibility, price_label="close")
+        return 2
+
     payload = build_payload(
         settings,
         close=close,
@@ -113,26 +123,15 @@ def main(argv: list[str] | None = None) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    inst_id = symbol_to_inst_id(args.symbol)
-    try:
-        sz, notional, est_margin = estimate_sz_summary(close, margin_usdt)
-        sz_summary = format(sz, "f")
-        notional_summary = format(notional, "f")
-        margin_summary = format(est_margin, "f")
-    except ValueError as exc:
-        sz_summary = "n/a"
-        notional_summary = "n/a"
-        margin_summary = f"estimate_error={exc}"
-
     print(f"payload_file={args.output.resolve()}")
     print(f"signal_id={payload['signal_id']}")
     print(f"instId={inst_id}")
-    print(f"side=buy")
+    print("side=buy")
     print(f"margin_usdt={payload['margin_usdt']}")
     print(f"leverage={payload['leverage']}")
-    print(f"estimated_sz={sz_summary}")
-    print(f"estimated_notional_usdt={notional_summary}")
-    print(f"estimated_margin_usdt={margin_summary}")
+    print(f"estimated_sz={format_decimal(feasibility.sz)}")
+    print(f"estimated_notional_usdt={format_decimal(feasibility.required_notional)}")
+    print(f"estimated_margin_usdt={format_decimal(feasibility.required_margin)}")
     print("webhook_secret=configured (value not printed)")
     print("payload_body=not printed (see payload_file)")
     print(f"cleanup=delete {args.output.name} after canary test")

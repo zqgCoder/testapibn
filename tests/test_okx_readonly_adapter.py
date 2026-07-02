@@ -27,6 +27,7 @@ def _settings(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "WEBHOOK_SECRET": _TEST_SECRET,
         "EXCHANGE": "okx",
+        "OKX_READONLY_MODE": "true",
         **_OKX_CREDS,
     }
     base.update(overrides)
