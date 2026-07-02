@@ -114,6 +114,78 @@
     renderLiveGuardBanner((data && data["Live Guard"]) || null);
   }
 
+  function renderCanaryPreflight(preflight) {
+    const badge = document.getElementById("canaryReadyBadge");
+    const demoNotice = document.getElementById("canaryDemoNotice");
+    const liveWarning = document.getElementById("canaryLiveWarning");
+    const blockingList = document.getElementById("canaryBlockingList");
+    if (!preflight || !badge) return;
+
+    const ready = !!preflight.canary_ready;
+    badge.textContent = ready ? "CANARY READY" : "NOT READY";
+    badge.className = "badge " + (ready ? "ok" : "bad");
+
+    if (demoNotice) {
+      if (!preflight.is_live) {
+        demoNotice.textContent =
+          "当前不是 live 环境，不能执行 live canary。Preflight 仅作配置与状态预览。";
+        demoNotice.classList.remove("hidden");
+      } else {
+        demoNotice.classList.add("hidden");
+      }
+    }
+
+    if (liveWarning) {
+      if (preflight.is_live) {
+        liveWarning.textContent =
+          "⚠ LIVE MAINNET 环境：本页仅 preflight 检查，v6.4.5 不提供一键实盘下单。";
+        liveWarning.classList.remove("hidden");
+      } else {
+        liveWarning.classList.add("hidden");
+      }
+    }
+
+    const guard = preflight.live_guard || {};
+    renderKvGrid("canarySummaryGrid", [
+      ["binance_env", preflight.binance_env],
+      ["is_live", preflight.is_live],
+      ["guard_active", guard.guard_active],
+      ["live_trading_enabled", preflight.live_trading_enabled],
+      ["live_confirm_phrase_valid", preflight.live_confirm_phrase_valid],
+      ["live_canary_mode", preflight.live_canary_mode],
+      ["canary_ready", preflight.canary_ready],
+    ]);
+
+    if (blockingList) {
+      const reasons = preflight.blocking_reasons || [];
+      if (!reasons.length) {
+        blockingList.className = "blocking-list empty-ok";
+        blockingList.innerHTML = "<li>无阻塞项，preflight 条件已满足</li>";
+      } else {
+        blockingList.className = "blocking-list";
+        blockingList.innerHTML = reasons.map((r) => `<li>${esc(r)}</li>`).join("");
+      }
+    }
+
+    const runtimeView = document.getElementById("canaryRuntimeView");
+    if (runtimeView) {
+      runtimeView.textContent = JSON.stringify(preflight.runtime || {}, null, 2);
+    }
+    const btcView = document.getElementById("canaryBtcView");
+    if (btcView) {
+      btcView.textContent = JSON.stringify(preflight.btcusdt || {}, null, 2);
+    }
+    const reconcileView = document.getElementById("canaryReconcileView");
+    if (reconcileView) {
+      reconcileView.textContent = JSON.stringify(preflight.reconcile_summary || {}, null, 2);
+    }
+  }
+
+  async function loadCanaryPreflight() {
+    const data = await apiFetch("/dashboard/api/live-canary/preflight");
+    renderCanaryPreflight((data && data.Preflight) || null);
+  }
+
   async function apiFetch(path, options) {
     if (!dashboardToken) {
       throw new Error(TOKEN_MISSING_MESSAGE);
@@ -234,7 +306,11 @@
   async function loadAll() {
     showError("");
     try {
-      await Promise.all([loadLiveGuardStatus(), loadRuntimeStatus()]);
+      await Promise.all([
+        loadLiveGuardStatus(),
+        loadCanaryPreflight(),
+        loadRuntimeStatus(),
+      ]);
       await loadMarketData();
     } catch (err) {
       showError(err.message || String(err));
@@ -399,6 +475,7 @@
     }, REFRESH_RUNTIME_MS);
     dataTimer = window.setInterval(() => {
       loadLiveGuardStatus().catch((e) => showError(e.message));
+      loadCanaryPreflight().catch((e) => showError(e.message));
       loadMarketData().catch((e) => showError(e.message));
     }, REFRESH_DATA_MS);
   }

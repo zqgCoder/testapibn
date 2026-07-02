@@ -35,6 +35,35 @@
   <div id="toast" class="toast hidden" role="status"></div>
 
   <main class="layout">
+    <section class="panel panel-wide" id="panel-canary-preflight">
+      <div class="panel-head">
+        <h2>Live Canary Preflight</h2>
+        <span class="badge" id="canaryReadyBadge">—</span>
+      </div>
+      <p id="canaryPhaseNote" class="hint">v6.4.5 仅 preflight，本阶段不执行真实实盘交易。</p>
+      <div id="canaryDemoNotice" class="canary-demo-notice hidden"></div>
+      <div id="canaryLiveWarning" class="canary-live-warning hidden"></div>
+      <div class="kv-grid" id="canarySummaryGrid"></div>
+      <div class="preflight-block">
+        <h3>Blocking Reasons</h3>
+        <ul id="canaryBlockingList" class="blocking-list"></ul>
+      </div>
+      <div class="preflight-columns">
+        <div class="preflight-block">
+          <h3>Runtime</h3>
+          <pre class="data-view compact" id="canaryRuntimeView">—</pre>
+        </div>
+        <div class="preflight-block">
+          <h3>BTCUSDT 摘要</h3>
+          <pre class="data-view compact" id="canaryBtcView">—</pre>
+        </div>
+        <div class="preflight-block">
+          <h3>Reconcile</h3>
+          <pre class="data-view compact" id="canaryReconcileView">—</pre>
+        </div>
+      </div>
+    </section>
+
     <section class="panel" id="panel-runtime">
       <div class="panel-head">
         <h2>运行状态</h2>

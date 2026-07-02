@@ -268,3 +268,46 @@ td.empty { text-align: center; color: var(--muted); }
 }
 
 #appShell.hidden { display: none; }
+
+.canary-demo-notice {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(76, 154, 255, 0.1);
+  color: #cfe4ff;
+  font-size: 0.85rem;
+}
+.canary-demo-notice.hidden { display: none; }
+
+.canary-live-warning {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  border: 2px solid rgba(229, 72, 77, 0.65);
+  background: rgba(229, 72, 77, 0.18);
+  color: #ffc9c9;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.canary-live-warning.hidden { display: none; }
+
+.preflight-block { margin-top: 0.75rem; }
+.preflight-block h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.preflight-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.blocking-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+.blocking-list.empty-ok { color: var(--ok); list-style: none; padding-left: 0; }
+.data-view.compact { max-height: 180px; font-size: 0.75rem; }

@@ -332,3 +332,37 @@ def register_runtime_control_dashboard_routes(
                 },
             }
         )
+
+    @router.get("/api/live-canary/preflight")
+    async def api_live_canary_preflight(
+        request: Request,
+        token: str | None = Query(None),
+        x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
+    ):
+        _guard_runtime_control_dashboard_read(
+            settings,
+            query_token=token,
+            header_token=x_dashboard_token or request.headers.get("X-Dashboard-Token"),
+        )
+        from .live_canary_preflight import build_live_canary_preflight, fetch_canary_market_snapshot
+
+        try:
+            market = fetch_canary_market_snapshot(client, DEFAULT_SYMBOL)
+        except Exception as exc:
+            from .live_canary_preflight import CanaryMarketSnapshot
+
+            market = CanaryMarketSnapshot(symbol=DEFAULT_SYMBOL)
+            market_error = str(exc)[:200]
+        else:
+            market_error = None
+
+        report = reconcile_service.get_latest_report() if reconcile_service is not None else None
+        payload = build_live_canary_preflight(
+            settings,
+            runtime_control,
+            market=market,
+            reconcile_report=report,
+        )
+        if market_error:
+            payload["btcusdt"]["fetch_error"] = market_error
+        return JSONResponse(content={"成功": True, "Preflight": payload})
