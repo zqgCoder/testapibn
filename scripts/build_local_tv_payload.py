@@ -22,6 +22,27 @@ from app.config import Settings
 
 DEFAULT_FILENAME = "_v645_live_guard_reject_payload.json"
 DEFAULT_OUTPUT = ROOT / DEFAULT_FILENAME
+STAGE_B_LIVE_ENDPOINT = "https://fapi.binance.com"
+
+
+def _normalize_base_url(url: str) -> str:
+    return url.strip().rstrip("/")
+
+
+def validate_stage_b_environment(
+    settings: Settings,
+    *,
+    allow_demo_debug: bool = False,
+) -> str | None:
+    """Return an error message when Stage B payload generation must be blocked."""
+    if not allow_demo_debug:
+        if _normalize_base_url(settings.binance_base_url) != STAGE_B_LIVE_ENDPOINT:
+            return "Stage B requires live endpoint; current endpoint is demo."
+    if settings.live_trading_enabled:
+        return (
+            "Stage B is rejection verification; LIVE_TRADING_ENABLED must be false."
+        )
+    return None
 
 
 def _round_price(value: Decimal) -> str:
@@ -107,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_OUTPUT,
         help=f"Output JSON path (default: ./{DEFAULT_FILENAME})",
     )
+    parser.add_argument(
+        "--allow-demo-debug",
+        action="store_true",
+        help="Dev-only: skip live endpoint check (not for Stage B runbook)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -118,8 +144,16 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: --close must be > 0", file=sys.stderr)
         return 1
 
+    settings = Settings()
+    env_error = validate_stage_b_environment(
+        settings,
+        allow_demo_debug=args.allow_demo_debug,
+    )
+    if env_error:
+        print(f"ERROR: {env_error}", file=sys.stderr)
+        return 1
+
     try:
-        settings = Settings()
         payload = build_payload(settings, close=close, side=args.side, symbol=args.symbol)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
