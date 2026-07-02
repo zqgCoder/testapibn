@@ -22,6 +22,7 @@ from .runtime_control import (
 if TYPE_CHECKING:
     from .binance_client import BinanceClient
     from .config import Settings
+    from .exchanges import ExchangeClient
     from .reconcile import SafetyReconcileService
     from .runtime_control import RuntimeControl
     from .storage import TradeJournalStore
@@ -64,22 +65,16 @@ def _clean_symbol(settings: Settings, symbol: str) -> str:
     return value
 
 
-def _symbol_positions(client: BinanceClient, symbol: str) -> list[dict[str, Any]]:
-    rows = client.position_risk(symbol)
-    rows = rows if isinstance(rows, list) else [rows]
-    return [row for row in rows if isinstance(row, dict)]
+def _symbol_positions(exchange_client: ExchangeClient, symbol: str) -> list[dict[str, Any]]:
+    return exchange_client.get_positions(symbol)
 
 
-def _symbol_algo_orders(client: BinanceClient, symbol: str) -> list[dict[str, Any]]:
-    rows = client.open_algo_orders(symbol)
-    rows = rows if isinstance(rows, list) else [rows]
-    return [row for row in rows if isinstance(row, dict)]
+def _symbol_algo_orders(exchange_client: ExchangeClient, symbol: str) -> list[dict[str, Any]]:
+    return exchange_client.get_algo_orders(symbol)
 
 
-def _symbol_open_orders(client: BinanceClient, symbol: str) -> list[dict[str, Any]]:
-    rows = client.open_orders(symbol)
-    rows = rows if isinstance(rows, list) else [rows]
-    return [row for row in rows if isinstance(row, dict)]
+def _symbol_open_orders(exchange_client: ExchangeClient, symbol: str) -> list[dict[str, Any]]:
+    return exchange_client.get_open_orders(symbol)
 
 
 def render_runtime_control_page_html() -> str:
@@ -186,7 +181,7 @@ def register_runtime_control_dashboard_routes(
         )
         sym = _clean_symbol(settings, symbol)
         try:
-            rows = _symbol_positions(client, sym)
+            rows = _symbol_positions(trader.exchange_client, sym)
         except Exception as exc:
             return JSONResponse(
                 content={"成功": False, "交易对": sym, "错误": str(exc)[:500], "持仓": []},
@@ -208,7 +203,7 @@ def register_runtime_control_dashboard_routes(
         )
         sym = _clean_symbol(settings, symbol)
         try:
-            rows = _symbol_algo_orders(client, sym)
+            rows = _symbol_algo_orders(trader.exchange_client, sym)
         except Exception as exc:
             return JSONResponse(
                 content={"成功": False, "交易对": sym, "错误": str(exc)[:500], "条件单": []},
@@ -232,7 +227,7 @@ def register_runtime_control_dashboard_routes(
         )
         sym = _clean_symbol(settings, symbol)
         try:
-            rows = _symbol_open_orders(client, sym)
+            rows = _symbol_open_orders(trader.exchange_client, sym)
         except Exception as exc:
             return JSONResponse(
                 content={"成功": False, "交易对": sym, "错误": str(exc)[:500], "普通委托": []},
@@ -315,9 +310,7 @@ def register_runtime_control_dashboard_routes(
         x_dashboard_token: str | None = Header(None, alias="X-Dashboard-Token"),
     ):
         guard_write(request, token, x_dashboard_token)
-        if reconcile_service is None:
-            raise HTTPException(status_code=503, detail="安全审计服务未启用")
-        report = reconcile_service.run_audit(trigger="dashboard_manual")
+        report = trader.exchange_client.reconcile(trigger="dashboard_manual")
         summary = (report or {}).get("summary") or {}
         return JSONResponse(
             content={

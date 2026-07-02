@@ -12,6 +12,31 @@ class Settings(BaseSettings):
 
     exchange: str = Field(default="binance", alias="EXCHANGE")
 
+    # ===== OKX (v6.5.1 read-only preflight) =====
+    okx_api_key: str = Field(default="", alias="OKX_API_KEY")
+    okx_api_secret: str = Field(default="", alias="OKX_API_SECRET")
+    okx_api_passphrase: str = Field(default="", alias="OKX_API_PASSPHRASE")
+    okx_base_url: str = Field(default="https://www.okx.com", alias="OKX_BASE_URL")
+    okx_simulated_trading: bool = Field(default=False, alias="OKX_SIMULATED_TRADING")
+    okx_default_inst_id: str = Field(default="BTC-USDT-SWAP", alias="OKX_DEFAULT_INST_ID")
+    okx_inst_type: str = Field(default="SWAP", alias="OKX_INST_TYPE")
+    okx_allowed_inst_ids: str = Field(
+        default="BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP",
+        alias="OKX_ALLOWED_INST_IDS",
+    )
+    okx_readonly_mode: bool = Field(default=True, alias="OKX_READONLY_MODE")
+    okx_live_trading_enabled: bool = Field(default=False, alias="OKX_LIVE_TRADING_ENABLED")
+    okx_confirm_phrase: str = Field(default="", alias="OKX_CONFIRM_PHRASE")
+    okx_expected_confirm_phrase: str = Field(
+        default="I_UNDERSTAND_THIS_IS_REAL_MONEY",
+        alias="OKX_EXPECTED_CONFIRM_PHRASE",
+    )
+    okx_require_one_shot: bool = Field(default=True, alias="OKX_REQUIRE_ONE_SHOT")
+    okx_force_runtime_locked_on_startup: bool = Field(
+        default=True, alias="OKX_FORCE_RUNTIME_LOCKED_ON_STARTUP"
+    )
+    okx_canary_mode: bool = Field(default=True, alias="OKX_CANARY_MODE")
+
     binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", alias="BINANCE_API_SECRET")
     binance_base_url: str = Field(default="https://demo-fapi.binance.com", alias="BINANCE_BASE_URL")
@@ -183,11 +208,16 @@ class Settings(BaseSettings):
     def allowed_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.allowed_symbols.split(",") if s.strip()}
 
+    @property
+    def okx_allowed_inst_id_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.okx_allowed_inst_ids.split(",") if s.strip()}
+
     def validate_runtime(self) -> None:
         missing = []
         if not self.webhook_secret:
             missing.append("WEBHOOK_SECRET")
-        if self.enable_trading:
+        exchange_name = self.exchange.strip().lower()
+        if self.enable_trading and exchange_name == "binance":
             if not self.binance_api_key:
                 missing.append("BINANCE_API_KEY")
             if not self.binance_api_secret:
@@ -307,8 +337,26 @@ class Settings(BaseSettings):
             raise RuntimeError("LIVE_MAX_POSITION_NOTIONAL_USDT must be >= 0")
         if not self.live_allowed_symbol_set:
             raise RuntimeError("LIVE_ALLOWED_SYMBOLS must not be empty")
-        if self.exchange.strip().lower() not in {"binance"}:
-            raise RuntimeError("EXCHANGE must be binance (OKX is not supported in v6.5.0)")
+        if exchange_name not in {"binance", "okx"}:
+            raise RuntimeError("EXCHANGE must be binance or okx")
+        if exchange_name == "okx":
+            if not self.okx_readonly_mode:
+                raise RuntimeError("OKX_READONLY_MODE must be true in v6.5.1")
+            if self.okx_live_trading_enabled:
+                raise RuntimeError("OKX_LIVE_TRADING_ENABLED must be false in v6.5.1")
+            okx_missing: list[str] = []
+            if not self.okx_api_key.strip():
+                okx_missing.append("OKX_API_KEY")
+            if not self.okx_api_secret.strip():
+                okx_missing.append("OKX_API_SECRET")
+            if not self.okx_api_passphrase.strip():
+                okx_missing.append("OKX_API_PASSPHRASE")
+            if okx_missing:
+                raise RuntimeError(
+                    f"Missing required OKX environment variables: {', '.join(okx_missing)}"
+                )
+            if not self.okx_allowed_inst_id_set:
+                raise RuntimeError("OKX_ALLOWED_INST_IDS must not be empty")
 
 
 @lru_cache(maxsize=1)

@@ -1369,6 +1369,24 @@ class Trader:
                 result = {**result, "tv_price_normalization": meta}
             return result
 
+        if self.settings.exchange.strip().lower() == "okx":
+            logger.warning(
+                "OKX execution blocked (read-only): signal_key=%s",
+                signal_key,
+            )
+            return _with_norm(
+                {
+                    "orders": {},
+                    "skipped": True,
+                    "skip_reason": "okx_execution_not_implemented",
+                    "message": (
+                        "OKX order execution is not implemented in v6.5.1 "
+                        "(read-only preflight only)"
+                    ),
+                    "exchange": "okx",
+                }
+            )
+
         if self.runtime_control is not None:
             blocked, runtime_summary = self.runtime_control.is_execution_blocked()
             if blocked:

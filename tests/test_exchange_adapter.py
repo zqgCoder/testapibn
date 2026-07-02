@@ -36,13 +36,13 @@ class ExchangeAdapterFactoryTests(unittest.TestCase):
         self.assertEqual(adapter.name, "binance")
 
     def test_unsupported_exchange_raises(self) -> None:
-        settings = _settings(EXCHANGE="okx")
+        settings = _settings(EXCHANGE="kraken")
         with self.assertRaises(RuntimeError) as ctx:
             create_exchange_client(settings, MagicMock())
-        self.assertIn("okx", str(ctx.exception).lower())
+        self.assertIn("kraken", str(ctx.exception).lower())
 
     def test_validate_runtime_rejects_unsupported_exchange(self) -> None:
-        settings = _settings(EXCHANGE="okx")
+        settings = _settings(EXCHANGE="kraken")
         with self.assertRaises(RuntimeError) as ctx:
             settings.validate_runtime()
         self.assertIn("EXCHANGE", str(ctx.exception))
