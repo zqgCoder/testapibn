@@ -4,15 +4,21 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .exchanges.okx_sizing import decimal_field
 from .exchanges.okx_symbols import symbol_to_inst_id
 from .live_guard import is_one_shot_active
+from .schemas import normalize_side
 
 if TYPE_CHECKING:
     from .config import Settings
+    from .exchanges.okx import OkxExchange
     from .runtime_control import RuntimeControl
     from .schemas import TradingViewSignal
 
 logger = logging.getLogger(__name__)
+
+OKX_CANARY_ALLOWED_SOURCE = "local_canary"
+OKX_CANARY_OPEN_SIDE = "buy"
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,10 @@ def resolve_okx_inst_id(
     return inst_id.upper()
 
 
+def _payload_source(raw_payload: dict[str, Any], signal: TradingViewSignal) -> str:
+    return str(raw_payload.get("source") or signal.source or "").strip().lower()
+
+
 def build_okx_guard_status(
     settings: Settings,
     runtime_control: RuntimeControl | None = None,
@@ -64,6 +74,10 @@ def build_okx_guard_status(
         "okx_require_one_shot": bool(settings.okx_require_one_shot),
         "okx_canary_mode": bool(settings.okx_canary_mode),
         "okx_simulated_trading": bool(settings.okx_simulated_trading),
+        "okx_td_mode": settings.okx_td_mode,
+        "okx_max_risk_usdt": settings.okx_max_risk_usdt,
+        "okx_max_margin_usdt": settings.okx_max_margin_usdt,
+        "okx_max_notional_usdt": settings.okx_max_position_notional_usdt,
         "one_shot_active": is_one_shot_active(runtime_control),
         "would_allow_execution": _would_allow_execution_summary(settings, runtime_control),
     }
@@ -123,7 +137,7 @@ def validate_okx_guard_before_plan(
             skip_reason="okx_readonly_mode",
             message=(
                 "OKX guard 拒绝：OKX_READONLY_MODE=true，"
-                "v6.5.2 仅支持 read-only preflight，不允许执行交易"
+                "不允许执行 OKX 交易（rejection / read-only 模式）"
             ),
         )
 
@@ -172,12 +186,79 @@ def validate_okx_guard_before_plan(
             ),
         )
 
-    return OkxGuardRejection(
-        skip_reason="okx_execution_not_implemented",
-        message=(
-            "OKX guard 通过配置检查，但 v6.5.2 仍未实现 OKX 下单执行路径"
-        ),
+    source = _payload_source(raw_payload, signal)
+    if source != OKX_CANARY_ALLOWED_SOURCE:
+        return OkxGuardRejection(
+            skip_reason="okx_source_not_allowed",
+            message=(
+                f"OKX guard 拒绝：source={source!r}，"
+                f"v6.5.3 仅允许 source={OKX_CANARY_ALLOWED_SOURCE!r}"
+            ),
+        )
+
+    return None
+
+
+def validate_okx_canary_before_execute(
+    settings: Settings,
+    signal: TradingViewSignal,
+    raw_payload: dict[str, Any],
+    *,
+    exchange: OkxExchange | None = None,
+    runtime_control: RuntimeControl | None = None,
+) -> OkxGuardRejection | None:
+    _ = exchange
+    base = validate_okx_guard_before_plan(
+        settings,
+        signal,
+        raw_payload,
+        runtime_control=runtime_control,
     )
+    if base is not None:
+        return base
+
+    try:
+        side = normalize_side(signal.side)
+    except Exception:
+        return OkxGuardRejection(
+            skip_reason="okx_side_not_allowed",
+            message="OKX canary 拒绝：side 无效，v6.5.3 仅允许 buy 开多",
+        )
+    if side != OKX_CANARY_OPEN_SIDE.upper():
+        return OkxGuardRejection(
+            skip_reason="okx_side_not_allowed",
+            message=(
+                f"OKX canary 拒绝：side={signal.side}，"
+                f"v6.5.3 仅允许 {OKX_CANARY_OPEN_SIDE} 开多后立即平仓"
+            ),
+        )
+
+    if signal.tps:
+        return OkxGuardRejection(
+            skip_reason="okx_tpsl_not_supported",
+            message="OKX canary 拒绝：v6.5.3 不支持 TP/SL protected 流程",
+        )
+    if signal.sl is not None:
+        return OkxGuardRejection(
+            skip_reason="okx_tpsl_not_supported",
+            message="OKX canary 拒绝：v6.5.3 不支持 SL（minimal open-close only）",
+        )
+
+    max_risk = decimal_field(settings.okx_max_risk_usdt)
+    max_margin = decimal_field(settings.okx_max_margin_usdt)
+    risk_usdt = decimal_field(signal.risk_usdt or raw_payload.get("risk_usdt"))
+    margin_usdt = decimal_field(signal.margin_usdt or raw_payload.get("margin_usdt"))
+    if risk_usdt > 0 and risk_usdt > max_risk:
+        return OkxGuardRejection(
+            skip_reason="okx_risk_too_large",
+            message=f"OKX canary 拒绝：risk_usdt={risk_usdt} 超过 OKX_MAX_RISK_USDT={max_risk}",
+        )
+    if margin_usdt > 0 and margin_usdt > max_margin:
+        return OkxGuardRejection(
+            skip_reason="okx_margin_too_large",
+            message=f"OKX canary 拒绝：margin_usdt={margin_usdt} 超过 OKX_MAX_MARGIN_USDT={max_margin}",
+        )
+    return None
 
 
 def build_okx_guard_skip_result(rejection: OkxGuardRejection) -> dict[str, Any]:

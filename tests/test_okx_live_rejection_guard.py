@@ -134,6 +134,20 @@ class OkxGuardValidationTests(unittest.TestCase):
         assert rejection is not None
         self.assertEqual(rejection.skip_reason, "okx_symbol_not_allowed")
 
+    def test_source_not_allowed_when_other_checks_pass(self) -> None:
+        settings = _settings(
+            OKX_READONLY_MODE="false",
+            OKX_LIVE_TRADING_ENABLED="true",
+            OKX_CONFIRM_PHRASE=_CONFIRM,
+            OKX_EXPECTED_CONFIRM_PHRASE=_CONFIRM,
+            OKX_REQUIRE_ONE_SHOT="false",
+        )
+        signal, payload = _signal_and_payload(source="tradingview")
+        rejection = validate_okx_guard_before_plan(settings, signal, payload)
+        self.assertIsNotNone(rejection)
+        assert rejection is not None
+        self.assertEqual(rejection.skip_reason, "okx_source_not_allowed")
+
     def test_binance_exchange_not_guarded(self) -> None:
         settings = Settings(
             WEBHOOK_SECRET=_TEST_SECRET,

@@ -12,6 +12,7 @@ from urllib3.util.retry import Retry
 
 from ..okx_auth import format_okx_timestamp, sign_okx_request
 from .base import ExchangeClient
+from .okx_sizing import OkxInstrumentMeta, parse_instrument_row
 from .okx_symbols import inst_id_to_symbol, symbol_to_inst_id, SYMBOL_TO_INST_ID
 
 if TYPE_CHECKING:
@@ -125,11 +126,91 @@ class OkxRestClient:
 
 
 class OkxExchange(ExchangeClient):
-    """OKX read-only exchange adapter (v6.5.1 — no order placement)."""
+    """OKX adapter: read-only queries + v6.5.3 minimal canary write paths."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client = OkxRestClient(settings)
+        self._instrument_cache: dict[str, OkxInstrumentMeta] = {}
+
+    def get_instrument(self, inst_id: str) -> OkxInstrumentMeta:
+        key = inst_id.upper()
+        cached = self._instrument_cache.get(key)
+        if cached is not None:
+            return cached
+        payload = self._client.request(
+            "GET",
+            "/api/v5/public/instruments",
+            params={
+                "instType": self.settings.okx_inst_type,
+                "instId": key,
+            },
+        )
+        rows = payload.get("data") or []
+        if not isinstance(rows, list) or not rows:
+            raise OkxAPIError(f"Instrument metadata not found for instId={inst_id}")
+        meta = parse_instrument_row(rows[0])
+        self._instrument_cache[key] = meta
+        return meta
+
+    def get_mark_price(self, inst_id: str) -> Decimal:
+        payload = self._client.request(
+            "GET",
+            "/api/v5/market/ticker",
+            params={"instId": inst_id},
+        )
+        rows = payload.get("data") or []
+        if not isinstance(rows, list) or not rows:
+            raise OkxAPIError(f"Ticker not found for instId={inst_id}")
+        last = rows[0].get("last") or rows[0].get("markPx")
+        if last in {None, ""}:
+            raise OkxAPIError(f"Mark price missing for instId={inst_id}")
+        return Decimal(str(last))
+
+    def place_market_order_minimal(
+        self,
+        *,
+        inst_id: str,
+        side: str,
+        sz: Decimal,
+        td_mode: str,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self.settings.okx_readonly_mode:
+            raise OkxReadOnlyUnsupportedError("OKX_READONLY_MODE=true blocks place_market_order_minimal")
+        body: dict[str, Any] = {
+            "instId": inst_id,
+            "tdMode": td_mode,
+            "side": side.lower(),
+            "ordType": "market",
+            "sz": format(sz, "f"),
+        }
+        if client_order_id:
+            body["clOrdId"] = client_order_id[:32]
+        payload = self._client.request("POST", "/api/v5/trade/order", body=body)
+        rows = payload.get("data") or []
+        return rows[0] if isinstance(rows, list) and rows else payload
+
+    def close_position_market(
+        self,
+        *,
+        inst_id: str,
+        td_mode: str,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self.settings.okx_readonly_mode:
+            raise OkxReadOnlyUnsupportedError("OKX_READONLY_MODE=true blocks close_position_market")
+        body: dict[str, Any] = {
+            "instId": inst_id,
+            "mgnMode": td_mode,
+            "posSide": "net",
+            "autoCxl": True,
+        }
+        if client_order_id:
+            body["clOrdId"] = client_order_id[:32]
+        payload = self._client.request("POST", "/api/v5/trade/close-position", body=body)
+        rows = payload.get("data") or []
+        return rows[0] if isinstance(rows, list) and rows else payload
 
     @property
     def name(self) -> str:
@@ -198,13 +279,21 @@ class OkxExchange(ExchangeClient):
         return [row for row in rows if isinstance(row, dict)]
 
     def cancel_open_orders(self, symbol: str) -> Any:
+        if self.settings.okx_readonly_mode:
+            raise OkxReadOnlyUnsupportedError(
+                f"OKX read-only mode: cancel_open_orders is not supported for {symbol}"
+            )
         raise OkxReadOnlyUnsupportedError(
-            f"OKX read-only mode: cancel_open_orders is not supported for {symbol}"
+            f"OKX v6.5.3 minimal canary does not implement cancel_open_orders for {symbol}"
         )
 
     def cancel_algo_orders(self, symbol: str) -> Any:
+        if self.settings.okx_readonly_mode:
+            raise OkxReadOnlyUnsupportedError(
+                f"OKX read-only mode: cancel_algo_orders is not supported for {symbol}"
+            )
         raise OkxReadOnlyUnsupportedError(
-            f"OKX read-only mode: cancel_algo_orders is not supported for {symbol}"
+            f"OKX v6.5.3 minimal canary does not implement cancel_algo_orders for {symbol}"
         )
 
     def close_position(
@@ -217,26 +306,60 @@ class OkxExchange(ExchangeClient):
         cancel_after_close: bool = True,
         wait_seconds: int = 10,
     ) -> dict[str, Any]:
-        _ = (cancel_before_close, cancel_after_close, wait_seconds)
+        _ = (cancel_before_close, cancel_after_close, wait_seconds, reason, operator)
         inst_id = symbol_to_inst_id(symbol)
         internal_symbol = inst_id_to_symbol(inst_id)
         position_rows = self.get_positions(internal_symbol)
         position_before_row = position_rows[0] if position_rows else None
-        return {
-            "symbol": internal_symbol,
-            "instId": inst_id,
-            "position_before": position_before_row,
-            "close_side": None,
-            "close_quantity": None,
-            "close_order": None,
-            "position_after": position_before_row,
-            "success": False,
-            "status": "okx_readonly_not_supported",
-            "skip_reason": "okx_readonly_not_supported",
-            "message": "OKX read-only mode: close_position is not supported",
-            "reason": reason,
-            "operator": operator,
-        }
+        if self.settings.okx_readonly_mode:
+            return {
+                "symbol": internal_symbol,
+                "instId": inst_id,
+                "position_before": position_before_row,
+                "close_side": None,
+                "close_quantity": None,
+                "close_order": None,
+                "position_after": position_before_row,
+                "success": False,
+                "status": "okx_readonly_not_supported",
+                "skip_reason": "okx_readonly_not_supported",
+                "message": "OKX read-only mode: close_position is not supported",
+                "reason": reason,
+                "operator": operator,
+            }
+        try:
+            close_order = self.close_position_market(
+                inst_id=inst_id,
+                td_mode=self.settings.okx_td_mode.strip().lower(),
+            )
+            position_after_rows = self.get_positions(internal_symbol)
+            position_after_row = position_after_rows[0] if position_after_rows else None
+            pos_amt = Decimal(str((position_after_row or {}).get("pos", "0")))
+            closed = pos_amt == 0
+            return {
+                "symbol": internal_symbol,
+                "instId": inst_id,
+                "position_before": position_before_row,
+                "close_side": "sell",
+                "close_quantity": None,
+                "close_order": close_order,
+                "position_after": position_after_row,
+                "success": closed,
+                "status": "position_closed" if closed else "position_close_incomplete",
+                "reason": reason,
+                "operator": operator,
+            }
+        except Exception as exc:
+            return {
+                "symbol": internal_symbol,
+                "instId": inst_id,
+                "position_before": position_before_row,
+                "success": False,
+                "status": "close_order_failed",
+                "close_error": str(exc),
+                "reason": reason,
+                "operator": operator,
+            }
 
     def reconcile(self, *, trigger: str = "manual") -> dict[str, Any]:
         inst_ids = sorted(self.settings.okx_allowed_inst_id_set) or sorted(SYMBOL_TO_INST_ID.values())

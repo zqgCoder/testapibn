@@ -17,6 +17,7 @@ class ExecutionStatus:
     TV_SANDBOX_REJECTED = "tv_sandbox_rejected"
     LIVE_GUARD_REJECTED = "live_guard_rejected"
     OKX_GUARD_REJECTED = "okx_guard_rejected"
+    OKX_CANARY_COMPLETED = "okx_canary_completed"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
     PROTECTION_FAILED = "protection_failed"
@@ -38,6 +39,7 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.TV_SANDBOX_REJECTED: "TV沙盒拒绝",
     ExecutionStatus.LIVE_GUARD_REJECTED: "Live Guard 拒绝",
     ExecutionStatus.OKX_GUARD_REJECTED: "OKX Guard 拒绝",
+    ExecutionStatus.OKX_CANARY_COMPLETED: "OKX Canary 完成",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
@@ -67,6 +69,9 @@ def _error_message_from_result(result: dict) -> str | None:
 
 def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
+    okx_canary = result.get("okx_canary") or {}
+    if okx_canary.get("success") and not result.get("skipped"):
+        return ExecutionStatus.OKX_CANARY_COMPLETED
     if skip_reason == "runtime_locked":
         return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
     if skip_reason and str(skip_reason).startswith("live_guard_"):

@@ -50,6 +50,8 @@ def evaluate_okx_preflight_blocking_reasons(
     if not okx_guard_applies(settings):
         reasons.insert(0, "not_okx_exchange")
     reasons.append("okx_execution_not_implemented")
+    if not settings.okx_readonly_mode and settings.okx_live_trading_enabled:
+        reasons = [r for r in reasons if r != "okx_execution_not_implemented"]
     snapshot = market or CanaryMarketSnapshot()
     if symbol_has_open_position(snapshot.positions):
         reasons.append("btcusdt_position_not_flat")

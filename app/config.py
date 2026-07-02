@@ -36,6 +36,12 @@ class Settings(BaseSettings):
         default=True, alias="OKX_FORCE_RUNTIME_LOCKED_ON_STARTUP"
     )
     okx_canary_mode: bool = Field(default=True, alias="OKX_CANARY_MODE")
+    okx_td_mode: str = Field(default="isolated", alias="OKX_TD_MODE")
+    okx_max_risk_usdt: float = Field(default=1, alias="OKX_MAX_RISK_USDT")
+    okx_max_margin_usdt: float = Field(default=20, alias="OKX_MAX_MARGIN_USDT")
+    okx_max_position_notional_usdt: float = Field(
+        default=100, alias="OKX_MAX_NOTIONAL_USDT"
+    )
 
     binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", alias="BINANCE_API_SECRET")
@@ -340,10 +346,6 @@ class Settings(BaseSettings):
         if exchange_name not in {"binance", "okx"}:
             raise RuntimeError("EXCHANGE must be binance or okx")
         if exchange_name == "okx":
-            if not self.okx_readonly_mode:
-                raise RuntimeError("OKX_READONLY_MODE must be true in v6.5.1")
-            if self.okx_live_trading_enabled:
-                raise RuntimeError("OKX_LIVE_TRADING_ENABLED must be false in v6.5.1")
             okx_missing: list[str] = []
             if not self.okx_api_key.strip():
                 okx_missing.append("OKX_API_KEY")
@@ -357,6 +359,14 @@ class Settings(BaseSettings):
                 )
             if not self.okx_allowed_inst_id_set:
                 raise RuntimeError("OKX_ALLOWED_INST_IDS must not be empty")
+            if self.okx_td_mode.strip().lower() not in {"isolated", "cross"}:
+                raise RuntimeError("OKX_TD_MODE must be isolated or cross")
+            if self.okx_max_risk_usdt < 0:
+                raise RuntimeError("OKX_MAX_RISK_USDT must be >= 0")
+            if self.okx_max_margin_usdt < 0:
+                raise RuntimeError("OKX_MAX_MARGIN_USDT must be >= 0")
+            if self.okx_max_position_notional_usdt < 0:
+                raise RuntimeError("OKX_MAX_NOTIONAL_USDT must be >= 0")
 
 
 @lru_cache(maxsize=1)

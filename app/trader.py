@@ -29,7 +29,9 @@ from .live_guard import (
     validate_live_guard_after_plan,
     validate_live_guard_before_plan,
 )
-from .okx_guard import build_okx_guard_skip_result, validate_okx_guard_before_plan
+from .okx_guard import OkxGuardRejection, build_okx_guard_skip_result, validate_okx_guard_before_plan
+from .okx_live_canary import execute_okx_minimal_open_close
+from .exchanges.okx import OkxExchange
 from .runtime_control import RuntimeControl
 from .schemas import TradingViewSignal, get_tp_price, normalize_side, normalize_signal_guard_prices, opposite_side
 from .tv_sandbox import build_tv_skip_result, is_tv_signal, validate_tv_policy
@@ -1402,6 +1404,26 @@ class Trader:
                     okx_rejection.message,
                 )
                 return _with_norm(build_okx_guard_skip_result(okx_rejection))
+
+            if not isinstance(self.exchange_client, OkxExchange):
+                return _with_norm(
+                    build_okx_guard_skip_result(
+                        OkxGuardRejection(
+                            skip_reason="okx_exchange_client_invalid",
+                            message="OKX execution requires OkxExchange adapter",
+                        )
+                    )
+                )
+            return _with_norm(
+                execute_okx_minimal_open_close(
+                    self.exchange_client,
+                    self.settings,
+                    signal,
+                    payload,
+                    signal_key=signal_key,
+                    runtime_control=self.runtime_control,
+                )
+            )
 
         if self.runtime_control is not None:
             blocked, runtime_summary = self.runtime_control.is_execution_blocked()

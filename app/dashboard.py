@@ -524,6 +524,7 @@ _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
     "tv_sandbox_rejected": ("WARN", "TradingView 信号被沙盒拒绝"),
     "live_guard_rejected": ("WARN", "Live Guard 拒绝"),
     "okx_guard_rejected": ("WARN", "OKX Guard 拒绝"),
+    "okx_canary_completed": ("OK", "OKX Canary 完成"),
     "entry_not_filled": ("WARN", "信号未成交"),
     "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
 }
