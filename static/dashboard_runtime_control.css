@@ -195,6 +195,30 @@ td.empty { text-align: center; color: var(--muted); }
 }
 .error-banner.hidden, .toast.hidden { display: none; }
 
+.live-guard-banner {
+  margin: 0.75rem 1.5rem 0;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(240, 180, 41, 0.45);
+  background: rgba(240, 180, 41, 0.12);
+  color: #ffe8a3;
+}
+.live-guard-banner.live-danger {
+  border-color: rgba(229, 72, 77, 0.55);
+  background: rgba(229, 72, 77, 0.16);
+  color: #ffc9c9;
+}
+.live-guard-banner.hidden { display: none; }
+.live-guard-banner h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.live-guard-banner p { margin: 0.25rem 0; font-size: 0.85rem; line-height: 1.5; }
+.live-guard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+}
+
 .toast {
   position: fixed;
   right: 1rem;

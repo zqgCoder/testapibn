@@ -23,6 +23,11 @@ from .risk import (
     validate_price_levels,
 )
 from .storage import AccountRiskStore
+from .live_guard import (
+    build_live_guard_skip_result,
+    validate_live_guard_after_plan,
+    validate_live_guard_before_plan,
+)
 from .runtime_control import RuntimeControl
 from .schemas import TradingViewSignal, get_tp_price, normalize_side, normalize_signal_guard_prices, opposite_side
 from .tv_sandbox import build_tv_skip_result, is_tv_signal, validate_tv_policy
@@ -1378,6 +1383,21 @@ class Trader:
                     }
                 )
 
+        live_rejection = validate_live_guard_before_plan(
+            self.settings,
+            signal,
+            payload,
+            runtime_control=self.runtime_control,
+        )
+        if live_rejection:
+            logger.warning(
+                "Live guard rejected signal before plan: signal_key=%s skip_reason=%s message=%s",
+                signal_key,
+                live_rejection.skip_reason,
+                live_rejection.message,
+            )
+            return _with_norm(build_live_guard_skip_result(live_rejection))
+
         if self.settings.tv_signal_sandbox_enabled and is_tv_signal(payload, self.settings):
             rejection = validate_tv_policy(payload, signal, self.settings, client=self.client)
             if rejection:
@@ -1392,6 +1412,21 @@ class Trader:
 
         plan = self.prepare_plan(signal)
         logger.info("Trade plan: %s", json.dumps(asdict(plan), default=str, ensure_ascii=False))
+
+        live_plan_rejection = validate_live_guard_after_plan(self.settings, signal, plan)
+        if live_plan_rejection:
+            logger.warning(
+                "Live guard rejected signal after plan: signal_key=%s skip_reason=%s message=%s",
+                signal_key,
+                live_plan_rejection.skip_reason,
+                live_plan_rejection.message,
+            )
+            return _with_norm(
+                {
+                    **build_live_guard_skip_result(live_plan_rejection),
+                    "plan": asdict(plan),
+                }
+            )
 
         if plan.dry_run:
             logger.warning("DRY_RUN active. No Binance orders submitted. Set ENABLE_TRADING=true to trade.")

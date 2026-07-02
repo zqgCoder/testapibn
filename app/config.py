@@ -140,6 +140,31 @@ class Settings(BaseSettings):
     tv_cloud_payload_invalid_warn: int = Field(default=3, alias="TV_CLOUD_PAYLOAD_INVALID_WARN")
     tv_cloud_runtime_lock_warn: int = Field(default=3, alias="TV_CLOUD_RUNTIME_LOCK_WARN")
 
+    # ===== V6.4.4 Live Canary Safety Guards =====
+    live_trading_enabled: bool = Field(default=False, alias="LIVE_TRADING_ENABLED")
+    live_confirm_phrase: str = Field(default="", alias="LIVE_CONFIRM_PHRASE")
+    live_expected_confirm_phrase: str = Field(
+        default="I_UNDERSTAND_THIS_IS_REAL_MONEY", alias="LIVE_EXPECTED_CONFIRM_PHRASE"
+    )
+    live_allowed_symbols: str = Field(default="BTCUSDT", alias="LIVE_ALLOWED_SYMBOLS")
+    live_max_risk_usdt: float = Field(default=1, alias="LIVE_MAX_RISK_USDT")
+    live_max_margin_usdt: float = Field(default=20, alias="LIVE_MAX_MARGIN_USDT")
+    live_max_position_notional_usdt: float = Field(
+        default=100, alias="LIVE_MAX_POSITION_NOTIONAL_USDT"
+    )
+    live_require_one_shot: bool = Field(default=True, alias="LIVE_REQUIRE_ONE_SHOT")
+    live_reject_tradingview_by_default: bool = Field(
+        default=True, alias="LIVE_REJECT_TRADINGVIEW_BY_DEFAULT"
+    )
+    live_force_runtime_locked_on_startup: bool = Field(
+        default=True, alias="LIVE_FORCE_RUNTIME_LOCKED_ON_STARTUP"
+    )
+    live_canary_mode: bool = Field(default=True, alias="LIVE_CANARY_MODE")
+
+    @property
+    def live_allowed_symbol_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.live_allowed_symbols.split(",") if s.strip()}
+
     @property
     def tv_alert_expected_symbol_set(self) -> set[str]:
         return {s.strip().upper() for s in self.tv_alert_expected_symbols.split(",") if s.strip()}
@@ -272,6 +297,14 @@ class Settings(BaseSettings):
             raise RuntimeError("TV_SIGNAL_GUARD_DISTANCE_BUFFER_PCT must be between 0 and 10")
         if self.tv_signal_distance_epsilon < 0 or self.tv_signal_distance_epsilon > 0.01:
             raise RuntimeError("TV_SIGNAL_DISTANCE_EPSILON must be between 0 and 0.01")
+        if self.live_max_risk_usdt < 0:
+            raise RuntimeError("LIVE_MAX_RISK_USDT must be >= 0")
+        if self.live_max_margin_usdt < 0:
+            raise RuntimeError("LIVE_MAX_MARGIN_USDT must be >= 0")
+        if self.live_max_position_notional_usdt < 0:
+            raise RuntimeError("LIVE_MAX_POSITION_NOTIONAL_USDT must be >= 0")
+        if not self.live_allowed_symbol_set:
+            raise RuntimeError("LIVE_ALLOWED_SYMBOLS must not be empty")
 
 
 @lru_cache(maxsize=1)
