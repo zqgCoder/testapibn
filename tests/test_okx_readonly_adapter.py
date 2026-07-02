@@ -119,11 +119,27 @@ class OkxReadOnlyExchangeTests(unittest.TestCase):
         self.assertEqual(result["skip_reason"], "okx_readonly_not_supported")
 
     def test_reconcile_counts_errors_on_api_failure(self) -> None:
-        with patch.object(self.adapter._client, "request", side_effect=RuntimeError("api down")):
-            report = self.adapter.reconcile(trigger="unit_test")
-        self.assertEqual(report["summary"]["error_count"], 3)
+        settings = _settings(OKX_ALLOWED_INST_IDS="BTC-USDT-SWAP")
+        adapter = OkxExchange(settings)
+        with patch.object(adapter._client, "request", side_effect=RuntimeError("api down")):
+            report = adapter.reconcile(trigger="unit_test")
+        summary = report["summary"]
+        self.assertEqual(summary["error_count"], 1)
+        self.assertEqual(summary["symbols_checked"], 1)
         self.assertFalse(report["success"])
+        self.assertEqual(report["level"], "ERROR")
         self.assertEqual(report["exchange"], "okx")
+        self.assertEqual(len(report["errors"]), 1)
+        error_row = report["errors"][0]
+        self.assertEqual(error_row["instId"], "BTC-USDT-SWAP")
+        self.assertEqual(error_row["symbol"], "BTCUSDT")
+        self.assertEqual(error_row["error"], "api down")
+        self.assertEqual(len(report["symbols"]), 1)
+        symbol_row = report["symbols"][0]
+        self.assertEqual(symbol_row["instId"], "BTC-USDT-SWAP")
+        self.assertEqual(symbol_row["symbol"], "BTCUSDT")
+        self.assertEqual(symbol_row["level"], "ERROR")
+        self.assertEqual(symbol_row["error"], "api down")
 
     def test_reconcile_clean_account_zero_errors(self) -> None:
         def fake_request(method: str, path: str, *, params=None, body=None):
