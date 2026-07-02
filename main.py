@@ -92,6 +92,12 @@ app.include_router(
 
 @app.on_event("startup")
 async def startup_safety_audit() -> None:
+    from app.live_guard import ensure_live_startup_runtime_lock
+
+    try:
+        ensure_live_startup_runtime_lock(settings, runtime_control)
+    except Exception:
+        logger.exception("Live canary startup lock failed unexpectedly")
     try:
         reconcile_service.run_audit(trigger="startup")
         logger.info(

@@ -73,6 +73,47 @@
     showToast._timer = window.setTimeout(() => el.classList.add("hidden"), 4000);
   }
 
+  function renderLiveGuardBanner(data) {
+    const el = document.getElementById("liveGuardBanner");
+    if (!el) return;
+    if (!data || !data.guard_active) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    const danger = data.is_live && (!data.live_trading_enabled || !data.live_confirm_phrase_valid);
+    el.classList.remove("hidden");
+    el.classList.toggle("live-danger", danger);
+    const blocking = (data.would_allow_execution && data.would_allow_execution.blocking_reasons) || [];
+    el.innerHTML = `
+      <h3>⚠ Binance 实盘环境 · Live Canary Guard</h3>
+      <p>当前 endpoint 为 <strong>live/mainnet</strong>。本版默认不自动放行实盘交易。</p>
+      <div class="live-guard-grid">
+        <div>Binance 环境: ${esc(data.binance_env)}</div>
+        <div>is_live: ${esc(data.is_live)}</div>
+        <div>LIVE_TRADING_ENABLED: ${esc(data.live_trading_enabled)}</div>
+        <div>LIVE_CANARY_MODE: ${esc(data.live_canary_mode)}</div>
+        <div>confirm phrase valid: ${esc(data.live_confirm_phrase_valid)}</div>
+        <div>allowed symbols: ${esc((data.live_allowed_symbols || []).join(", "))}</div>
+        <div>max risk USDT: ${esc(data.live_max_risk_usdt)}</div>
+        <div>max margin USDT: ${esc(data.live_max_margin_usdt)}</div>
+        <div>max notional USDT: ${esc(data.live_max_position_notional_usdt)}</div>
+        <div>reject TradingView: ${esc(data.live_reject_tradingview_by_default)}</div>
+        <div>one-shot active: ${esc(data.one_shot_active)}</div>
+      </div>
+      ${
+        blocking.length
+          ? `<p style="margin-top:0.65rem">当前阻塞原因: ${esc(blocking.join(", "))}</p>`
+          : ""
+      }
+    `;
+  }
+
+  async function loadLiveGuardStatus() {
+    const data = await apiFetch("/dashboard/api/live-guard/status");
+    renderLiveGuardBanner((data && data["Live Guard"]) || null);
+  }
+
   async function apiFetch(path, options) {
     if (!dashboardToken) {
       throw new Error(TOKEN_MISSING_MESSAGE);
@@ -193,7 +234,7 @@
   async function loadAll() {
     showError("");
     try {
-      await loadRuntimeStatus();
+      await Promise.all([loadLiveGuardStatus(), loadRuntimeStatus()]);
       await loadMarketData();
     } catch (err) {
       showError(err.message || String(err));
@@ -357,6 +398,7 @@
       loadRuntimeStatus().catch((e) => showError(e.message));
     }, REFRESH_RUNTIME_MS);
     dataTimer = window.setInterval(() => {
+      loadLiveGuardStatus().catch((e) => showError(e.message));
       loadMarketData().catch((e) => showError(e.message));
     }, REFRESH_DATA_MS);
   }
