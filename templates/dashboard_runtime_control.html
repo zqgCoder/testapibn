@@ -64,6 +64,34 @@
       </div>
     </section>
 
+    <section class="panel panel-wide hidden" id="panel-okx-preflight">
+      <div class="panel-head">
+        <h2>OKX Live Rejection Preflight</h2>
+        <span class="badge" id="okxReadyBadge">—</span>
+      </div>
+      <p id="okxPhaseNote" class="hint">v6.5.2 OKX read-only rejection guard，本阶段不执行 OKX 下单。</p>
+      <div id="okxReadonlyWarning" class="canary-live-warning hidden"></div>
+      <div class="kv-grid" id="okxSummaryGrid"></div>
+      <div class="preflight-block">
+        <h3>Blocking Reasons</h3>
+        <ul id="okxBlockingList" class="blocking-list"></ul>
+      </div>
+      <div class="preflight-columns">
+        <div class="preflight-block">
+          <h3>Runtime</h3>
+          <pre class="data-view compact" id="okxRuntimeView">—</pre>
+        </div>
+        <div class="preflight-block">
+          <h3>BTCUSDT / BTC-USDT-SWAP</h3>
+          <pre class="data-view compact" id="okxBtcView">—</pre>
+        </div>
+        <div class="preflight-block">
+          <h3>Reconcile</h3>
+          <pre class="data-view compact" id="okxReconcileView">—</pre>
+        </div>
+      </div>
+    </section>
+
     <section class="panel" id="panel-runtime">
       <div class="panel-head">
         <h2>运行状态</h2>

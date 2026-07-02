@@ -523,6 +523,7 @@ _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
     "blocked_by_runtime_lock": ("WARN", "信号被 Runtime Lock 拦截"),
     "tv_sandbox_rejected": ("WARN", "TradingView 信号被沙盒拒绝"),
     "live_guard_rejected": ("WARN", "Live Guard 拒绝"),
+    "okx_guard_rejected": ("WARN", "OKX Guard 拒绝"),
     "entry_not_filled": ("WARN", "信号未成交"),
     "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
 }
@@ -2084,7 +2085,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       const s = String(status || "");
       if (s === "protected") return lvlBadge("OK", s);
       if (s === "failed" || s === "protection_failed") return lvlBadge("ERROR", s);
-      if (s.startsWith("blocked_") || s === "tv_sandbox_rejected" || s === "live_guard_rejected" || s === "entry_not_filled" || s === "skipped_by_position_policy") {{
+      if (s.startsWith("blocked_") || s === "tv_sandbox_rejected" || s === "live_guard_rejected" || s === "okx_guard_rejected" || s === "entry_not_filled" || s === "skipped_by_position_policy") {{
         return lvlBadge("WARN", s);
       }}
       return lvlBadge("INFO", s || "-");

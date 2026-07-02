@@ -16,6 +16,7 @@ class ExecutionStatus:
     SKIPPED_BY_POSITION_POLICY = "skipped_by_position_policy"
     TV_SANDBOX_REJECTED = "tv_sandbox_rejected"
     LIVE_GUARD_REJECTED = "live_guard_rejected"
+    OKX_GUARD_REJECTED = "okx_guard_rejected"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
     PROTECTION_FAILED = "protection_failed"
@@ -36,6 +37,7 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.SKIPPED_BY_POSITION_POLICY: "持仓策略跳过",
     ExecutionStatus.TV_SANDBOX_REJECTED: "TV沙盒拒绝",
     ExecutionStatus.LIVE_GUARD_REJECTED: "Live Guard 拒绝",
+    ExecutionStatus.OKX_GUARD_REJECTED: "OKX Guard 拒绝",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
@@ -55,7 +57,7 @@ def _filled_qty_from_result(result: dict) -> Decimal:
 
 
 def _error_message_from_result(result: dict) -> str | None:
-    for key in ("live_guard", "tv_sandbox"):
+    for key in ("live_guard", "okx_guard", "tv_sandbox"):
         block = result.get(key) or {}
         message = block.get("message")
         if message:
@@ -69,6 +71,8 @@ def resolve_execution_status(result: dict) -> str:
         return ExecutionStatus.BLOCKED_BY_RUNTIME_LOCK
     if skip_reason and str(skip_reason).startswith("live_guard_"):
         return ExecutionStatus.LIVE_GUARD_REJECTED
+    if skip_reason and str(skip_reason).startswith("okx_"):
+        return ExecutionStatus.OKX_GUARD_REJECTED
     if skip_reason == "duplicate_signal":
         return ExecutionStatus.TV_SANDBOX_REJECTED
     if skip_reason == "signal_expired":

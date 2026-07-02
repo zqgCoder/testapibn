@@ -186,6 +186,69 @@
     renderCanaryPreflight((data && data.Preflight) || null);
   }
 
+  function renderOkxPreflight(preflight) {
+    const panel = document.getElementById("panel-okx-preflight");
+    const binancePanel = document.getElementById("panel-canary-preflight");
+    const badge = document.getElementById("okxReadyBadge");
+    const warning = document.getElementById("okxReadonlyWarning");
+    const blockingList = document.getElementById("okxBlockingList");
+    if (!preflight || !badge) return;
+
+    const isOkx = preflight.exchange === "okx";
+    if (panel) panel.classList.toggle("hidden", !isOkx);
+    if (binancePanel) binancePanel.classList.toggle("hidden", isOkx);
+    if (!isOkx) return;
+
+    const ready = !!preflight.canary_ready;
+    badge.textContent = ready ? "CANARY READY" : "NOT READY";
+    badge.className = "badge " + (ready ? "ok" : "bad");
+
+    if (warning) {
+      if (preflight.readonly_mode) {
+        warning.textContent =
+          "⚠ OKX READ-ONLY 模式：v6.5.2 仅 rejection guard + 只读预检，不提供 OKX 下单。";
+        warning.classList.remove("hidden");
+      } else {
+        warning.classList.add("hidden");
+      }
+    }
+
+    renderKvGrid("okxSummaryGrid", [
+      ["exchange", preflight.exchange],
+      ["readonly_mode", preflight.readonly_mode],
+      ["okx_live_trading_enabled", preflight.okx_live_trading_enabled],
+      ["okx_confirm_phrase_configured", preflight.okx_confirm_phrase_configured],
+      ["okx_confirm_phrase_valid", preflight.okx_confirm_phrase_valid],
+      ["allowed_inst_ids", (preflight.allowed_inst_ids || []).join(", ")],
+      ["canary_ready", preflight.canary_ready],
+    ]);
+
+    if (blockingList) {
+      const reasons = preflight.blocking_reasons || [];
+      if (!reasons.length) {
+        blockingList.className = "blocking-list empty-ok";
+        blockingList.innerHTML = "<li>无阻塞项</li>";
+      } else {
+        blockingList.className = "blocking-list";
+        blockingList.innerHTML = reasons.map((r) => `<li>${esc(r)}</li>`).join("");
+      }
+    }
+
+    const runtimeView = document.getElementById("okxRuntimeView");
+    if (runtimeView) runtimeView.textContent = JSON.stringify(preflight.runtime || {}, null, 2);
+    const btcView = document.getElementById("okxBtcView");
+    if (btcView) btcView.textContent = JSON.stringify(preflight.btcusdt || {}, null, 2);
+    const reconcileView = document.getElementById("okxReconcileView");
+    if (reconcileView) {
+      reconcileView.textContent = JSON.stringify(preflight.reconcile_summary || {}, null, 2);
+    }
+  }
+
+  async function loadOkxPreflight() {
+    const data = await apiFetch("/dashboard/api/okx-canary/preflight");
+    renderOkxPreflight((data && data.Preflight) || null);
+  }
+
   async function apiFetch(path, options) {
     if (!dashboardToken) {
       throw new Error(TOKEN_MISSING_MESSAGE);
@@ -309,6 +372,7 @@
       await Promise.all([
         loadLiveGuardStatus(),
         loadCanaryPreflight(),
+        loadOkxPreflight(),
         loadRuntimeStatus(),
       ]);
       await loadMarketData();
@@ -476,6 +540,7 @@
     dataTimer = window.setInterval(() => {
       loadLiveGuardStatus().catch((e) => showError(e.message));
       loadCanaryPreflight().catch((e) => showError(e.message));
+      loadOkxPreflight().catch((e) => showError(e.message));
       loadMarketData().catch((e) => showError(e.message));
     }, REFRESH_DATA_MS);
   }

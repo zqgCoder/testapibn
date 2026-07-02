@@ -180,7 +180,8 @@ class OkxTraderExecutionTests(unittest.TestCase):
         signal.signal_id = "OKX-TEST-001"
         result = trader.execute(signal, "okx-test-key", {"symbol": "BTCUSDT", "side": "buy"})
         self.assertTrue(result["skipped"])
-        self.assertEqual(result["skip_reason"], "okx_execution_not_implemented")
+        self.assertEqual(result["skip_reason"], "okx_readonly_mode")
+        self.assertIn("okx_guard", result)
         client.new_market_order.assert_not_called()
 
     def test_binance_execute_not_blocked_by_okx_guard(self) -> None:

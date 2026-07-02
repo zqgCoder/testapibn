@@ -29,6 +29,7 @@ from .live_guard import (
     validate_live_guard_after_plan,
     validate_live_guard_before_plan,
 )
+from .okx_guard import build_okx_guard_skip_result, validate_okx_guard_before_plan
 from .runtime_control import RuntimeControl
 from .schemas import TradingViewSignal, get_tp_price, normalize_side, normalize_signal_guard_prices, opposite_side
 from .tv_sandbox import build_tv_skip_result, is_tv_signal, validate_tv_policy
@@ -1370,22 +1371,37 @@ class Trader:
             return result
 
         if self.settings.exchange.strip().lower() == "okx":
-            logger.warning(
-                "OKX execution blocked (read-only): signal_key=%s",
-                signal_key,
+            if self.runtime_control is not None:
+                blocked, runtime_summary = self.runtime_control.is_execution_blocked()
+                if blocked:
+                    logger.warning(
+                        "Execution skipped by runtime lock: signal_key=%s summary=%s",
+                        signal_key,
+                        runtime_summary,
+                    )
+                    return _with_norm(
+                        {
+                            "orders": {},
+                            "skipped": True,
+                            "skip_reason": "runtime_locked",
+                            "runtime_summary": runtime_summary,
+                        }
+                    )
+
+            okx_rejection = validate_okx_guard_before_plan(
+                self.settings,
+                signal,
+                payload,
+                runtime_control=self.runtime_control,
             )
-            return _with_norm(
-                {
-                    "orders": {},
-                    "skipped": True,
-                    "skip_reason": "okx_execution_not_implemented",
-                    "message": (
-                        "OKX order execution is not implemented in v6.5.1 "
-                        "(read-only preflight only)"
-                    ),
-                    "exchange": "okx",
-                }
-            )
+            if okx_rejection:
+                logger.warning(
+                    "OKX guard rejected signal: signal_key=%s skip_reason=%s message=%s",
+                    signal_key,
+                    okx_rejection.skip_reason,
+                    okx_rejection.message,
+                )
+                return _with_norm(build_okx_guard_skip_result(okx_rejection))
 
         if self.runtime_control is not None:
             blocked, runtime_summary = self.runtime_control.is_execution_blocked()
