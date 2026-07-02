@@ -4,8 +4,9 @@ import logging
 from decimal import Decimal
 from typing import Any
 
-from .schemas import TradingViewSignal
+from .okx_error_observability import extract_okx_error_from_result
 from .redaction import journal_json_dumps
+from .schemas import TradingViewSignal
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,9 @@ class ExecutionStatus:
     LIVE_GUARD_REJECTED = "live_guard_rejected"
     OKX_GUARD_REJECTED = "okx_guard_rejected"
     OKX_CANARY_COMPLETED = "okx_canary_completed"
+    OKX_CANARY_OPEN_FAILED = "okx_canary_open_failed"
+    OKX_CANARY_CLOSE_FAILED = "okx_canary_close_failed"
+    OKX_CANARY_RECONCILE_FAILED = "okx_canary_reconcile_failed"
     ENTRY_NOT_FILLED = "entry_not_filled"
     PROTECTED = "protected"
     PROTECTION_FAILED = "protection_failed"
@@ -40,6 +44,9 @@ STATUS_LABELS_ZH = {
     ExecutionStatus.LIVE_GUARD_REJECTED: "Live Guard 拒绝",
     ExecutionStatus.OKX_GUARD_REJECTED: "OKX Guard 拒绝",
     ExecutionStatus.OKX_CANARY_COMPLETED: "OKX Canary 完成",
+    ExecutionStatus.OKX_CANARY_OPEN_FAILED: "OKX Canary 开仓失败",
+    ExecutionStatus.OKX_CANARY_CLOSE_FAILED: "OKX Canary 平仓失败",
+    ExecutionStatus.OKX_CANARY_RECONCILE_FAILED: "OKX Canary 对账失败",
     ExecutionStatus.ENTRY_NOT_FILLED: "未成交",
     ExecutionStatus.PROTECTED: "已开仓并挂保护单",
     ExecutionStatus.PROTECTION_FAILED: "保护单失败或不完整",
@@ -59,6 +66,9 @@ def _filled_qty_from_result(result: dict) -> Decimal:
 
 
 def _error_message_from_result(result: dict) -> str | None:
+    okx_fields = extract_okx_error_from_result(result)
+    if okx_fields.get("error_summary"):
+        return str(okx_fields["error_summary"])[:2000]
     for key in ("live_guard", "okx_guard", "tv_sandbox"):
         block = result.get(key) or {}
         message = block.get("message")
@@ -70,6 +80,13 @@ def _error_message_from_result(result: dict) -> str | None:
 def resolve_execution_status(result: dict) -> str:
     skip_reason = result.get("skip_reason")
     okx_canary = result.get("okx_canary") or {}
+    canary_status = okx_canary.get("status")
+    if canary_status in {
+        ExecutionStatus.OKX_CANARY_OPEN_FAILED,
+        ExecutionStatus.OKX_CANARY_CLOSE_FAILED,
+        ExecutionStatus.OKX_CANARY_RECONCILE_FAILED,
+    }:
+        return str(canary_status)
     if okx_canary.get("success") and not result.get("skipped"):
         return ExecutionStatus.OKX_CANARY_COMPLETED
     if skip_reason == "runtime_locked":

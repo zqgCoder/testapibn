@@ -11,6 +11,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ..okx_auth import format_okx_timestamp, sign_okx_request
+from ..okx_error_observability import log_okx_order_error
 from .base import ExchangeClient
 from .okx_sizing import OkxInstrumentMeta, parse_instrument_row
 from .okx_symbols import inst_id_to_symbol, symbol_to_inst_id, SYMBOL_TO_INST_ID
@@ -24,10 +25,136 @@ logger = logging.getLogger(__name__)
 class OkxAPIError(RuntimeError):
     """OKX REST API returned an error response."""
 
-    def __init__(self, message: str, *, code: str | None = None, data: Any = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        code: str | None = None,
+        msg: str | None = None,
+        data: Any = None,
+        s_code: str | None = None,
+        s_msg: str | None = None,
+        method: str | None = None,
+        request_path: str | None = None,
+    ) -> None:
         super().__init__(message)
+        self.http_status = http_status
         self.code = code
+        self.msg = msg
         self.data = data
+        self.s_code = s_code
+        self.s_msg = s_msg
+        self.method = method
+        self.request_path = request_path
+
+    @staticmethod
+    def _first_data_item(payload: dict[str, Any]) -> dict[str, Any] | None:
+        data = payload.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+        return None
+
+    @classmethod
+    def from_response(
+        cls,
+        *,
+        method: str,
+        request_path: str,
+        payload: dict[str, Any],
+        http_status: int | None = None,
+    ) -> OkxAPIError:
+        code = str(payload.get("code", "")) if payload.get("code") is not None else None
+        msg = payload.get("msg")
+        if msg is not None:
+            msg = str(msg)
+        data = payload.get("data")
+        first = cls._first_data_item(payload)
+        s_code = None
+        s_msg = None
+        if first is not None:
+            if first.get("sCode") is not None:
+                s_code = str(first.get("sCode"))
+            if first.get("sMsg") is not None:
+                s_msg = str(first.get("sMsg"))
+
+        if s_code not in {None, "", "0"}:
+            message = f"OKX API item error sCode={s_code} sMsg={s_msg}"
+        elif code not in {None, "", "0"}:
+            message = f"OKX API error code={code} msg={msg}"
+        else:
+            message = f"OKX API error http_status={http_status} code={code} msg={msg}"
+
+        return cls(
+            message,
+            http_status=http_status,
+            code=code,
+            msg=msg,
+            data=data,
+            s_code=s_code,
+            s_msg=s_msg,
+            method=method.upper(),
+            request_path=request_path,
+        )
+
+    @classmethod
+    def from_http_error(
+        cls,
+        *,
+        method: str,
+        request_path: str,
+        http_status: int,
+        body_text: str,
+    ) -> OkxAPIError:
+        payload: dict[str, Any] | None = None
+        try:
+            parsed = json.loads(body_text)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = None
+        if payload is not None:
+            err = cls.from_response(
+                method=method,
+                request_path=request_path,
+                payload=payload,
+                http_status=http_status,
+            )
+            if err.code in {None, "", "0"} and err.s_code in {None, "", "0"}:
+                err.msg = err.msg or body_text[:500]
+            return err
+        return cls(
+            f"{http_status} {body_text[:500]}",
+            http_status=http_status,
+            method=method.upper(),
+            request_path=request_path,
+        )
+
+
+def _raise_if_okx_payload_error(
+    *,
+    method: str,
+    request_path: str,
+    payload: dict[str, Any],
+    http_status: int,
+) -> None:
+    code = str(payload.get("code", ""))
+    first = OkxAPIError._first_data_item(payload)
+    s_code = str(first.get("sCode")) if first and first.get("sCode") is not None else None
+    if code not in {"0", ""}:
+        raise OkxAPIError.from_response(
+            method=method,
+            request_path=request_path,
+            payload=payload,
+            http_status=http_status,
+        )
+    if s_code not in {None, "", "0"}:
+        raise OkxAPIError.from_response(
+            method=method,
+            request_path=request_path,
+            payload=payload,
+            http_status=http_status,
+        )
 
 
 class OkxReadOnlyUnsupportedError(RuntimeError):
@@ -112,16 +239,32 @@ class OkxRestClient:
             timeout=self.settings.request_timeout,
         )
         if resp.status_code >= 400:
-            logger.error("OKX API HTTP error path=%s status=%s body=%s", request_path, resp.status_code, resp.text)
-            raise OkxAPIError(f"{resp.status_code} {resp.text}")
-        payload = resp.json()
-        code = str(payload.get("code", ""))
-        if code not in {"0", ""}:
-            raise OkxAPIError(
-                f"OKX API error code={code} msg={payload.get('msg')}",
-                code=code,
-                data=payload.get("data"),
+            logger.error(
+                "OKX API HTTP error method=%s path=%s status=%s",
+                method.upper(),
+                request_path,
+                resp.status_code,
             )
+            raise OkxAPIError.from_http_error(
+                method=method,
+                request_path=request_path,
+                http_status=resp.status_code,
+                body_text=resp.text,
+            )
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise OkxAPIError(
+                f"Unexpected OKX response type: {type(payload)!r}",
+                method=method.upper(),
+                request_path=request_path,
+                http_status=resp.status_code,
+            )
+        _raise_if_okx_payload_error(
+            method=method,
+            request_path=request_path,
+            payload=payload,
+            http_status=resp.status_code,
+        )
         return payload
 
 
@@ -187,7 +330,19 @@ class OkxExchange(ExchangeClient):
         }
         if client_order_id:
             body["clOrdId"] = client_order_id[:32]
-        payload = self._client.request("POST", "/api/v5/trade/order", body=body)
+        try:
+            payload = self._client.request("POST", "/api/v5/trade/order", body=body)
+        except OkxAPIError as exc:
+            log_okx_order_error(
+                error_stage="open_order",
+                exc=exc,
+                inst_id=inst_id,
+                td_mode=td_mode,
+                side=side.lower(),
+                sz=sz,
+                cl_ord_id=client_order_id,
+            )
+            raise
         rows = payload.get("data") or []
         return rows[0] if isinstance(rows, list) and rows else payload
 
@@ -208,7 +363,19 @@ class OkxExchange(ExchangeClient):
         }
         if client_order_id:
             body["clOrdId"] = client_order_id[:32]
-        payload = self._client.request("POST", "/api/v5/trade/close-position", body=body)
+        try:
+            payload = self._client.request("POST", "/api/v5/trade/close-position", body=body)
+        except OkxAPIError as exc:
+            log_okx_order_error(
+                error_stage="close_order",
+                exc=exc,
+                inst_id=inst_id,
+                td_mode=td_mode,
+                side=None,
+                sz=None,
+                cl_ord_id=client_order_id,
+            )
+            raise
         rows = payload.get("data") or []
         return rows[0] if isinstance(rows, list) and rows else payload
 

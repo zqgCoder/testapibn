@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from .journal import STATUS_LABELS_ZH
+from .okx_error_observability import extract_okx_error_from_result
 from .redaction import redact_json_text, redact_sensitive
 from .storage import TradeJournalStore
 
@@ -45,9 +47,20 @@ class TradeStatsService:
         return self.store.stats_rejections(limit=limit)
 
     @staticmethod
+    def _okx_error_brief_from_row(row: dict) -> dict:
+        raw = row.get("result_json")
+        if not raw:
+            return {}
+        try:
+            result = json.loads(raw)
+        except Exception:
+            return {}
+        return extract_okx_error_from_result(result)
+
+    @staticmethod
     def execution_brief(row: dict) -> dict:
         status = row.get("status")
-        return {
+        brief = {
             "编号": row.get("id"),
             "信号编号": row.get("signal_key"),
             "信号ID": row.get("signal_id"),
@@ -62,7 +75,10 @@ class TradeStatsService:
             "杠杆": row.get("leverage"),
             "创建时间": row.get("created_at"),
             "更新时间": row.get("updated_at"),
+            "错误信息": row.get("error_message"),
         }
+        brief.update(TradeStatsService._okx_error_brief_from_row(row))
+        return brief
 
     @staticmethod
     def execution_detail(row: dict) -> dict:

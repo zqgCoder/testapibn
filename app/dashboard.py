@@ -525,6 +525,9 @@ _JOURNAL_ALERT_RULES: dict[str, tuple[str, str]] = {
     "live_guard_rejected": ("WARN", "Live Guard 拒绝"),
     "okx_guard_rejected": ("WARN", "OKX Guard 拒绝"),
     "okx_canary_completed": ("OK", "OKX Canary 完成"),
+    "okx_canary_open_failed": ("ERROR", "OKX Canary 开仓失败"),
+    "okx_canary_close_failed": ("ERROR", "OKX Canary 平仓失败"),
+    "okx_canary_reconcile_failed": ("ERROR", "OKX Canary 对账失败"),
     "entry_not_filled": ("WARN", "信号未成交"),
     "skipped_by_position_policy": ("WARN", "持仓策略跳过"),
 }
@@ -2414,7 +2417,7 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
       body.querySelectorAll("button[data-id]").forEach((btn) => {{
         btn.addEventListener("click", () => openDetail(btn.getAttribute("data-id")));
       }});
-      const hasFail = rows.some((r) => ["failed", "protection_failed"].includes(r["状态"]));
+      const hasFail = rows.some((r) => ["failed", "protection_failed", "okx_canary_open_failed", "okx_canary_close_failed", "okx_canary_reconcile_failed"].includes(r["状态"]));
       const hasWarn = rows.some((r) =>
         ["blocked_by_runtime_lock", "tv_sandbox_rejected", "blocked_by_account_risk", "entry_not_filled"].includes(r["状态"])
       );
@@ -2947,6 +2950,13 @@ def render_dashboard_html(auto_refresh_sec: int) -> str:
           ["状态", record["状态"]],
           ["状态说明", record["状态说明"]],
           ["跳过原因", record["跳过原因"]],
+          ["错误信息", record["错误信息"]],
+          ["error_stage", record["error_stage"]],
+          ["error_summary", record["error_summary"]],
+          ["okx_code", record["okx_code"]],
+          ["okx_msg", record["okx_msg"]],
+          ["okx_scode", record["okx_scode"]],
+          ["okx_smsg", record["okx_smsg"]],
           ["计划数量", record["计划数量"]],
           ["成交数量", record["成交数量"]],
           ["进场价", record["进场价"]],
