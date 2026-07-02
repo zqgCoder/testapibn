@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only OKX account trade readiness check (v6.5.5).
+"""Read-only OKX account trade readiness check (v6.5.5+ / v6.5.6 posSide).
 
 Queries account config/balance to help diagnose canary open-order failures.
 Does not place orders. Never prints API secrets or passphrases.
@@ -17,6 +17,12 @@ if str(ROOT) not in sys.path:
 
 from app.config import Settings
 from app.exchanges.okx import OkxExchange, OkxRestClient
+from app.okx_pos_side import (
+    canary_order_shape,
+    normalize_okx_pos_mode,
+    recommended_pos_side,
+    resolve_canary_pos_side,
+)
 
 ACCOUNT_LEVEL_LABELS = {
     "1": "Simple",
@@ -62,9 +68,9 @@ def _tdmode_suggestion(pos_mode: str, configured_td_mode: str) -> str:
     else:
         base = "isolated"
     if pos_mode == "long_short_mode":
-        return f"{base} (account posMode=long_short_mode; ensure order posSide/tdMode match account setup)"
+        return f"{base} (account posMode=long_short_mode; canary uses posSide=long on open/close)"
     if pos_mode == "net_mode":
-        return f"{base} (account posMode=net_mode; canary uses net close-position)"
+        return f"{base} (account posMode=net_mode; canary close uses posSide=net)"
     return base
 
 
@@ -93,15 +99,22 @@ def main(argv: list[str] | None = None) -> int:
 
     config_row = _first_row(config_payload)
     acct_lv = str(config_row.get("acctLv") or "unknown")
-    pos_mode = str(config_row.get("posMode") or "unknown")
+    pos_mode_raw = str(config_row.get("posMode") or "unknown")
+    pos_mode = normalize_okx_pos_mode(pos_mode_raw)
     account_mode = ACCOUNT_LEVEL_LABELS.get(acct_lv, f"level_{acct_lv}")
     available_usdt = _available_usdt(balance_payload)
     tdmode_suggestion = _tdmode_suggestion(pos_mode, configured_td_mode)
+    pos_side = resolve_canary_pos_side(settings, pos_mode)
+    recommended = recommended_pos_side(pos_mode, settings)
+    order_shape = canary_order_shape(pos_mode, pos_side)
 
     print(f"account_mode={account_mode}")
-    print(f"pos_mode={pos_mode}")
+    print(f"pos_mode={pos_mode_raw}")
+    print(f"recommended_pos_side={recommended}")
+    print(f"canary_order_shape={order_shape}")
     print(f"available_usdt={available_usdt}")
     print(f"okx_td_mode={configured_td_mode}")
+    print(f"okx_pos_side={settings.okx_pos_side.strip().lower()}")
     print(f"tdmode_suggestion={tdmode_suggestion}")
     print(f"positions_query_ok={positions_ok}")
     print(f"okx_simulated_trading={str(settings.okx_simulated_trading).lower()}")

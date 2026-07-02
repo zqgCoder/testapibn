@@ -35,6 +35,7 @@ def _canary_settings(**overrides: object) -> Settings:
         "OKX_REQUIRE_ONE_SHOT": "true",
         "OKX_ALLOWED_INST_IDS": "BTC-USDT-SWAP",
         "OKX_TD_MODE": "isolated",
+        "OKX_POS_SIDE": "long",
         "OKX_MAX_RISK_USDT": "1",
         "OKX_MAX_MARGIN_USDT": "20",
         "OKX_MAX_NOTIONAL_USDT": "100",
@@ -166,6 +167,7 @@ class OkxCanaryExecuteTests(unittest.TestCase):
     def _exchange(self, settings: Settings) -> MagicMock:
         exchange = MagicMock(spec=OkxExchange)
         exchange.name = "okx"
+        exchange.get_account_config.return_value = {"posMode": "net_mode"}
         exchange.get_mark_price.return_value = Decimal("900")
         exchange.get_instrument.return_value = OkxInstrumentMeta(
             inst_id="BTC-USDT-SWAP",

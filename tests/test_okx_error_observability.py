@@ -135,6 +135,7 @@ class OkxCanaryFailureResultTests(unittest.TestCase):
         from app.exchanges.okx_sizing import OkxInstrumentMeta
 
         exchange = MagicMock(spec=OkxExchange)
+        exchange.get_account_config.return_value = {"posMode": "long_short_mode"}
         exchange.get_mark_price.return_value = Decimal("61500")
         exchange.get_instrument.return_value = OkxInstrumentMeta(
             inst_id="BTC-USDT-SWAP",

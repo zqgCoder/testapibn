@@ -13,11 +13,20 @@ from .okx_error_observability import (
     OKX_CANARY_STATUS_OPEN_FAILED,
     OKX_CANARY_STATUS_RECONCILE_FAILED,
     build_okx_error_summary,
+    log_canary_order_intent,
 )
 from .okx_guard import (
     OkxGuardRejection,
     build_okx_guard_skip_result,
     validate_okx_canary_before_execute,
+)
+from .okx_pos_side import (
+    OKX_CANARY_CLOSE_SIDE,
+    OKX_CANARY_OPEN_SIDE,
+    canary_order_shape,
+    normalize_okx_pos_mode,
+    resolve_canary_close_side,
+    resolve_canary_pos_side,
 )
 
 if TYPE_CHECKING:
@@ -27,7 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OKX_CANARY_ALLOWED_SOURCE = "local_canary"
-OKX_CANARY_OPEN_SIDE = "buy"
 
 
 def _client_order_id(prefix: str) -> str:
@@ -40,6 +48,8 @@ def _build_canary_context(
     internal_symbol: str,
     inst_id: str,
     td_mode: str,
+    pos_mode: str,
+    pos_side: str | None,
     sz: Decimal,
     notional: Decimal,
     estimated_margin: Decimal,
@@ -57,6 +67,9 @@ def _build_canary_context(
         "estimated_margin_usdt": format(estimated_margin, "f"),
         "mark_price": format(mark_price, "f"),
         "td_mode": td_mode,
+        "pos_mode": pos_mode,
+        "pos_side": pos_side,
+        "canary_order_shape": canary_order_shape(pos_mode, pos_side),
         "instrument": {
             "lotSz": format(meta.lot_sz, "f"),
             "minSz": format(meta.min_sz, "f"),
@@ -76,6 +89,7 @@ def _build_okx_canary_failure_result(
     sz: Decimal | None = None,
     cl_ord_id: str | None = None,
     side: str | None = OKX_CANARY_OPEN_SIDE,
+    pos_side: str | None = None,
     reconcile_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     okx_error = build_okx_error_summary(
@@ -86,6 +100,7 @@ def _build_okx_canary_failure_result(
         side=side,
         sz=sz,
         cl_ord_id=cl_ord_id,
+        pos_side=pos_side,
     )
     canary = {
         **canary_context,
@@ -136,6 +151,9 @@ def execute_okx_minimal_open_close(
     inst_id = symbol_to_inst_id(str(signal.symbol))
     internal_symbol = inst_id_to_symbol(inst_id)
     td_mode = settings.okx_td_mode.strip().lower()
+    account_config = exchange.get_account_config()
+    pos_mode = normalize_okx_pos_mode(account_config.get("posMode"))
+    pos_side = resolve_canary_pos_side(settings, pos_mode)
     mark_price = exchange.get_mark_price(inst_id)
     meta = exchange.get_instrument(inst_id)
     margin_budget = decimal_field(signal.margin_usdt or raw_payload.get("margin_usdt"))
@@ -161,6 +179,8 @@ def execute_okx_minimal_open_close(
         internal_symbol=internal_symbol,
         inst_id=inst_id,
         td_mode=td_mode,
+        pos_mode=pos_mode,
+        pos_side=pos_side,
         sz=sz,
         notional=notional,
         estimated_margin=estimated_margin,
@@ -169,13 +189,15 @@ def execute_okx_minimal_open_close(
     )
 
     open_client_id = _client_order_id("okxcanaryopen")
-    logger.info(
-        "OKX minimal canary open: signal_key=%s instId=%s sz=%s notional=%s tdMode=%s",
-        signal_key,
-        inst_id,
-        sz,
-        notional,
-        td_mode,
+    log_canary_order_intent(
+        phase="open",
+        inst_id=inst_id,
+        td_mode=td_mode,
+        pos_mode=pos_mode,
+        pos_side=pos_side,
+        side=OKX_CANARY_OPEN_SIDE,
+        sz=sz,
+        cl_ord_id=open_client_id,
     )
     try:
         open_order = exchange.place_market_order_minimal(
@@ -184,6 +206,8 @@ def execute_okx_minimal_open_close(
             sz=sz,
             td_mode=td_mode,
             client_order_id=open_client_id,
+            pos_side=pos_side,
+            pos_mode=pos_mode,
         )
     except OkxAPIError as exc:
         return _build_okx_canary_failure_result(
@@ -195,6 +219,7 @@ def execute_okx_minimal_open_close(
             td_mode=td_mode,
             sz=sz,
             cl_ord_id=open_client_id,
+            pos_side=pos_side,
         )
     except Exception as exc:
         return _build_okx_canary_failure_result(
@@ -206,14 +231,29 @@ def execute_okx_minimal_open_close(
             td_mode=td_mode,
             sz=sz,
             cl_ord_id=open_client_id,
+            pos_side=pos_side,
         )
 
     close_client_id = _client_order_id("okxcanaryclose")
+    close_side = resolve_canary_close_side(pos_side)
+    log_canary_order_intent(
+        phase="close",
+        inst_id=inst_id,
+        td_mode=td_mode,
+        pos_mode=pos_mode,
+        pos_side=pos_side,
+        side=close_side,
+        sz=sz,
+        cl_ord_id=close_client_id,
+    )
     try:
         close_order = exchange.close_position_market(
             inst_id=inst_id,
             td_mode=td_mode,
             client_order_id=close_client_id,
+            pos_side=pos_side,
+            sz=sz,
+            pos_mode=pos_mode,
         )
     except OkxAPIError as exc:
         return _build_okx_canary_failure_result(
@@ -227,7 +267,8 @@ def execute_okx_minimal_open_close(
             inst_id=inst_id,
             td_mode=td_mode,
             cl_ord_id=close_client_id,
-            side=None,
+            side=close_side,
+            pos_side=pos_side,
         )
     except Exception as exc:
         return _build_okx_canary_failure_result(
@@ -241,7 +282,8 @@ def execute_okx_minimal_open_close(
             inst_id=inst_id,
             td_mode=td_mode,
             cl_ord_id=close_client_id,
-            side=None,
+            side=close_side,
+            pos_side=pos_side,
         )
 
     reconcile_report = exchange.reconcile(trigger=f"okx_canary:{signal_key}")

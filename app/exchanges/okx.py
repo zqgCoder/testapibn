@@ -310,6 +310,16 @@ class OkxExchange(ExchangeClient):
             raise OkxAPIError(f"Mark price missing for instId={inst_id}")
         return Decimal(str(last))
 
+    def get_account_config(self) -> dict[str, Any]:
+        payload = self._client.request("GET", "/api/v5/account/config")
+        rows = payload.get("data") or []
+        if not isinstance(rows, list) or not rows:
+            raise OkxAPIError("Account config not found")
+        row = rows[0]
+        if not isinstance(row, dict):
+            raise OkxAPIError(f"Unexpected OKX account config payload: {type(row)!r}")
+        return row
+
     def place_market_order_minimal(
         self,
         *,
@@ -318,6 +328,8 @@ class OkxExchange(ExchangeClient):
         sz: Decimal,
         td_mode: str,
         client_order_id: str | None = None,
+        pos_side: str | None = None,
+        pos_mode: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.okx_readonly_mode:
             raise OkxReadOnlyUnsupportedError("OKX_READONLY_MODE=true blocks place_market_order_minimal")
@@ -328,6 +340,8 @@ class OkxExchange(ExchangeClient):
             "ordType": "market",
             "sz": format(sz, "f"),
         }
+        if pos_side:
+            body["posSide"] = pos_side
         if client_order_id:
             body["clOrdId"] = client_order_id[:32]
         try:
@@ -338,6 +352,8 @@ class OkxExchange(ExchangeClient):
                 exc=exc,
                 inst_id=inst_id,
                 td_mode=td_mode,
+                pos_mode=pos_mode,
+                pos_side=pos_side,
                 side=side.lower(),
                 sz=sz,
                 cl_ord_id=client_order_id,
@@ -352,27 +368,50 @@ class OkxExchange(ExchangeClient):
         inst_id: str,
         td_mode: str,
         client_order_id: str | None = None,
+        pos_side: str | None = None,
+        sz: Decimal | None = None,
+        pos_mode: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.okx_readonly_mode:
             raise OkxReadOnlyUnsupportedError("OKX_READONLY_MODE=true blocks close_position_market")
-        body: dict[str, Any] = {
-            "instId": inst_id,
-            "mgnMode": td_mode,
-            "posSide": "net",
-            "autoCxl": True,
-        }
-        if client_order_id:
-            body["clOrdId"] = client_order_id[:32]
+        if pos_side in {"long", "short"}:
+            if sz is None:
+                raise ValueError(f"sz is required to close posSide={pos_side}")
+            close_side = "sell" if pos_side == "long" else "buy"
+            body: dict[str, Any] = {
+                "instId": inst_id,
+                "tdMode": td_mode,
+                "side": close_side,
+                "posSide": pos_side,
+                "ordType": "market",
+                "sz": format(sz, "f"),
+                "reduceOnly": True,
+            }
+            if client_order_id:
+                body["clOrdId"] = client_order_id[:32]
+            request_path = "/api/v5/trade/order"
+        else:
+            body = {
+                "instId": inst_id,
+                "mgnMode": td_mode,
+                "posSide": "net",
+                "autoCxl": True,
+            }
+            if client_order_id:
+                body["clOrdId"] = client_order_id[:32]
+            request_path = "/api/v5/trade/close-position"
         try:
-            payload = self._client.request("POST", "/api/v5/trade/close-position", body=body)
+            payload = self._client.request("POST", request_path, body=body)
         except OkxAPIError as exc:
             log_okx_order_error(
                 error_stage="close_order",
                 exc=exc,
                 inst_id=inst_id,
                 td_mode=td_mode,
-                side=None,
-                sz=None,
+                pos_mode=pos_mode,
+                pos_side=pos_side or "net",
+                side=body.get("side"),
+                sz=sz,
                 cl_ord_id=client_order_id,
             )
             raise

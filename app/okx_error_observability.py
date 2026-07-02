@@ -32,6 +32,7 @@ def build_okx_error_summary(
     side: str | None = None,
     sz: Decimal | str | None = None,
     cl_ord_id: str | None = None,
+    pos_side: str | None = None,
 ) -> dict[str, Any]:
     if hasattr(exc, "s_code") or hasattr(exc, "code"):
         fields = okx_error_observability_fields(exc)
@@ -65,7 +66,33 @@ def build_okx_error_summary(
         payload["sz"] = format(sz, "f") if isinstance(sz, Decimal) else str(sz)
     if cl_ord_id is not None:
         payload["clOrdId"] = cl_ord_id
+    if pos_side is not None:
+        payload["posSide"] = pos_side
     return payload
+
+
+def log_canary_order_intent(
+    *,
+    phase: str,
+    inst_id: str,
+    td_mode: str,
+    pos_mode: str,
+    pos_side: str | None,
+    side: str,
+    sz: Decimal | str | None,
+    cl_ord_id: str | None,
+) -> None:
+    logger.info(
+        "OKX minimal canary %s intent: instId=%s tdMode=%s posMode=%s posSide=%s side=%s sz=%s clOrdId=%s",
+        phase,
+        inst_id,
+        td_mode,
+        pos_mode,
+        pos_side or "net",
+        side,
+        format(sz, "f") if isinstance(sz, Decimal) else sz,
+        cl_ord_id,
+    )
 
 
 def log_okx_order_error(
@@ -77,13 +104,17 @@ def log_okx_order_error(
     side: str | None = None,
     sz: Decimal | str | None = None,
     cl_ord_id: str | None = None,
+    pos_mode: str | None = None,
+    pos_side: str | None = None,
 ) -> None:
     logger.error(
-        "OKX canary order failed: error_stage=%s instId=%s tdMode=%s side=%s sz=%s clOrdId=%s "
-        "okx_code=%s okx_msg=%s okx_scode=%s okx_smsg=%s request_path=%s",
+        "OKX canary order failed: error_stage=%s instId=%s tdMode=%s posMode=%s posSide=%s side=%s sz=%s "
+        "clOrdId=%s okx_code=%s okx_msg=%s okx_scode=%s okx_smsg=%s request_path=%s",
         error_stage,
         inst_id,
         td_mode,
+        pos_mode,
+        pos_side or "net",
         side,
         format(sz, "f") if isinstance(sz, Decimal) else sz,
         cl_ord_id,

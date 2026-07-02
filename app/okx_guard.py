@@ -75,6 +75,7 @@ def build_okx_guard_status(
         "okx_canary_mode": bool(settings.okx_canary_mode),
         "okx_simulated_trading": bool(settings.okx_simulated_trading),
         "okx_td_mode": settings.okx_td_mode,
+        "okx_pos_side": settings.okx_pos_side,
         "okx_max_risk_usdt": settings.okx_max_risk_usdt,
         "okx_max_margin_usdt": settings.okx_max_margin_usdt,
         "okx_max_notional_usdt": settings.okx_max_position_notional_usdt,
@@ -229,8 +230,14 @@ def validate_okx_canary_before_execute(
             skip_reason="okx_side_not_allowed",
             message=(
                 f"OKX canary 拒绝：side={signal.side}，"
-                f"v6.5.3 仅允许 {OKX_CANARY_OPEN_SIDE} 开多后立即平仓"
+                f"v6.5.6 仅允许 {OKX_CANARY_OPEN_SIDE} 开多后立即平仓"
             ),
+        )
+
+    if settings.okx_pos_side.strip().lower() != "long":
+        return OkxGuardRejection(
+            skip_reason="okx_pos_side_not_allowed",
+            message="OKX canary 拒绝：v6.5.6 仅允许 OKX_POS_SIDE=long",
         )
 
     if signal.tps:

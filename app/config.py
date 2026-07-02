@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     )
     okx_canary_mode: bool = Field(default=True, alias="OKX_CANARY_MODE")
     okx_td_mode: str = Field(default="isolated", alias="OKX_TD_MODE")
+    okx_pos_side: str = Field(default="long", alias="OKX_POS_SIDE")
     okx_max_risk_usdt: float = Field(default=1, alias="OKX_MAX_RISK_USDT")
     okx_max_margin_usdt: float = Field(default=20, alias="OKX_MAX_MARGIN_USDT")
     okx_max_position_notional_usdt: float = Field(
@@ -361,6 +362,8 @@ class Settings(BaseSettings):
                 raise RuntimeError("OKX_ALLOWED_INST_IDS must not be empty")
             if self.okx_td_mode.strip().lower() not in {"isolated", "cross"}:
                 raise RuntimeError("OKX_TD_MODE must be isolated or cross")
+            if self.okx_pos_side.strip().lower() != "long":
+                raise RuntimeError("OKX_POS_SIDE must be long for v6.5.6 minimal canary")
             if self.okx_max_risk_usdt < 0:
                 raise RuntimeError("OKX_MAX_RISK_USDT must be >= 0")
             if self.okx_max_margin_usdt < 0:
