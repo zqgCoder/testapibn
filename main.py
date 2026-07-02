@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from app.binance_client import BinanceClient
 from app.config import get_settings
 from app.exchange_rules import ExchangeRules
+from app.exchanges import create_exchange_client
 from app.schemas import TradingViewSignal, normalize_side
 from app.storage import AccountRiskStore, RuntimeControlStore, SignalStore, TradeJournalStore
 from app.account_risk import AccountRiskGuard
@@ -64,8 +65,16 @@ trade_journal = TradeJournal(journal_store)
 trade_stats = TradeStatsService(journal_store)
 runtime_store = RuntimeControlStore(settings.sqlite_path)
 runtime_control = RuntimeControl(settings, runtime_store)
-trader = Trader(settings, client, rules, account_risk=account_risk, runtime_control=runtime_control)
 reconcile_service = SafetyReconcileService(settings, client, runtime_control)
+exchange_client = create_exchange_client(settings, client, reconcile_service=reconcile_service)
+trader = Trader(
+    settings,
+    client,
+    rules,
+    account_risk=account_risk,
+    runtime_control=runtime_control,
+    exchange_client=exchange_client,
+)
 store = SignalStore(settings.sqlite_path)
 
 APP_VERSION = "1.13.0"

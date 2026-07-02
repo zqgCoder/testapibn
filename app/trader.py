@@ -10,6 +10,7 @@ from decimal import Decimal
 from .account_risk import AccountRiskGuard
 from .binance_client import BinanceAPIError, BinanceClient
 from .config import Settings
+from .exchanges import ExchangeClient, create_exchange_client
 from .exchange_rules import ExchangeRules, SymbolRules, floor_to_step, normalize_market_quantity
 from .risk import (
     TradePlan,
@@ -57,11 +58,13 @@ class Trader:
         account_risk: AccountRiskGuard | None = None,
         account_risk_store: AccountRiskStore | None = None,
         runtime_control: RuntimeControl | None = None,
+        exchange_client: ExchangeClient | None = None,
     ):
         self.settings = settings
         self.client = client
         self.rules = rules
         self.runtime_control = runtime_control
+        self.exchange_client = exchange_client or create_exchange_client(settings, client)
         if account_risk is not None:
             self.account_risk = account_risk
         else:
@@ -169,12 +172,12 @@ class Trader:
         """Cancel regular and algo/conditional open orders for a symbol."""
         result: dict = {"regular": None, "algo": None}
         try:
-            result["regular"] = self.client.cancel_all_open_orders(symbol)
+            result["regular"] = self.exchange_client.cancel_open_orders(symbol)
         except Exception as exc:
             logger.warning("Failed to cancel regular open orders for %s: %s", symbol, exc)
             result["regular_error"] = str(exc)
         try:
-            result["algo"] = self.client.cancel_all_algo_open_orders(symbol)
+            result["algo"] = self.exchange_client.cancel_algo_orders(symbol)
         except Exception as exc:
             logger.warning("Failed to cancel algo open orders for %s: %s", symbol, exc)
             result["algo_error"] = str(exc)
@@ -1480,12 +1483,8 @@ class Trader:
         return _with_norm(responses)
 
     def _position_row_for_symbol(self, symbol: str) -> dict | None:
-        data = self.client.position_risk(symbol)
-        rows = data if isinstance(data, list) else [data]
-        for row in rows:
-            if str(row.get("symbol", "")).upper() == symbol.upper():
-                return row
-        return None
+        rows = self.exchange_client.get_positions(symbol)
+        return rows[0] if rows else None
 
     @staticmethod
     def _position_amount_from_row(row: dict | None) -> Decimal:
@@ -1517,131 +1516,14 @@ class Trader:
         wait_seconds: int = 10,
     ) -> dict:
         self._check_symbol_allowed(symbol)
-        position_before_row = self._position_row_for_symbol(symbol)
-        position_amt = self._position_amount_from_row(position_before_row)
-
-        cancel_regular_before = None
-        cancel_algo_before = None
-        cancel_regular_after = None
-        cancel_algo_after = None
-        close_side: str | None = None
-        close_quantity: str | None = None
-        close_order = None
-        close_error: str | None = None
-
-        if position_amt == 0:
-            if cancel_before_close or cancel_after_close:
-                cancel_result = self.cancel_symbol_open_orders(symbol)
-                cancel_regular_before = cancel_result.get("regular")
-                cancel_algo_before = cancel_result.get("algo")
-                if cancel_result.get("regular_error"):
-                    cancel_regular_before = {"error": cancel_result["regular_error"]}
-                if cancel_result.get("algo_error"):
-                    cancel_algo_before = {"error": cancel_result["algo_error"]}
-            position_after_row = self._position_row_for_symbol(symbol)
-            return {
-                "symbol": symbol,
-                "position_before": position_before_row,
-                "close_side": None,
-                "close_quantity": None,
-                "close_order": None,
-                "position_after": position_after_row,
-                "cancel_regular_before": cancel_regular_before,
-                "cancel_algo_before": cancel_algo_before,
-                "cancel_regular_after": cancel_regular_after,
-                "cancel_algo_after": cancel_algo_after,
-                "success": True,
-                "status": "no_position_cleanup_done",
-                "reason": reason,
-                "operator": operator,
-            }
-
-        close_side = "SELL" if position_amt > 0 else "BUY"
-        close_quantity = format(abs(position_amt), "f")
-
-        if cancel_before_close:
-            cancel_result = self.cancel_symbol_open_orders(symbol)
-            cancel_regular_before = cancel_result.get("regular")
-            cancel_algo_before = cancel_result.get("algo")
-            if cancel_result.get("regular_error"):
-                cancel_regular_before = {"error": cancel_result["regular_error"]}
-            if cancel_result.get("algo_error"):
-                cancel_algo_before = {"error": cancel_result["algo_error"]}
-
-        try:
-            close_order = self.client.close_position_market(
-                symbol=symbol,
-                position_amt=position_amt,
-                client_order_id=self._client_order_id("maintclose"),
-            )
-        except Exception as exc:
-            close_error = str(exc)
-            logger.error(
-                "Maintenance position close failed: symbol=%s operator=%s reason=%s error=%s",
-                symbol,
-                operator,
-                reason,
-                exc,
-            )
-            position_after_row = self._position_row_for_symbol(symbol)
-            return {
-                "symbol": symbol,
-                "position_before": position_before_row,
-                "close_side": close_side,
-                "close_quantity": close_quantity,
-                "close_order": None,
-                "close_error": close_error,
-                "position_after": position_after_row,
-                "cancel_regular_before": cancel_regular_before,
-                "cancel_algo_before": cancel_algo_before,
-                "cancel_regular_after": cancel_regular_after,
-                "cancel_algo_after": cancel_algo_after,
-                "success": False,
-                "status": "close_order_failed",
-                "reason": reason,
-                "operator": operator,
-            }
-
-        self._wait_for_position_zero(symbol, wait_seconds)
-        position_after_row = self._position_row_for_symbol(symbol)
-        position_after_amt = self._position_amount_from_row(position_after_row)
-
-        if cancel_after_close:
-            cancel_result = self.cancel_symbol_open_orders(symbol)
-            cancel_regular_after = cancel_result.get("regular")
-            cancel_algo_after = cancel_result.get("algo")
-            if cancel_result.get("regular_error"):
-                cancel_regular_after = {"error": cancel_result["regular_error"]}
-            if cancel_result.get("algo_error"):
-                cancel_algo_after = {"error": cancel_result["algo_error"]}
-
-        closed = position_after_amt == 0
-        status = "position_closed" if closed else "position_close_incomplete"
-        logger.info(
-            "Maintenance position close: symbol=%s operator=%s reason=%s status=%s close_side=%s qty=%s",
+        return self.exchange_client.close_position(
             symbol,
-            operator,
-            reason,
-            status,
-            close_side,
-            close_quantity,
+            reason=reason,
+            operator=operator,
+            cancel_before_close=cancel_before_close,
+            cancel_after_close=cancel_after_close,
+            wait_seconds=wait_seconds,
         )
-        return {
-            "symbol": symbol,
-            "position_before": position_before_row,
-            "close_side": close_side,
-            "close_quantity": close_quantity,
-            "close_order": close_order,
-            "position_after": position_after_row,
-            "cancel_regular_before": cancel_regular_before,
-            "cancel_algo_before": cancel_algo_before,
-            "cancel_regular_after": cancel_regular_after,
-            "cancel_algo_after": cancel_algo_after,
-            "success": closed,
-            "status": status,
-            "reason": reason,
-            "operator": operator,
-        }
 
     def cleanup_symbol_orders(
         self,
@@ -1656,11 +1538,11 @@ class Trader:
         open_orders: list | None = None
         algo_orders: list | None = None
         try:
-            open_orders = self.client.open_orders(symbol)
+            open_orders = self.exchange_client.get_open_orders(symbol)
         except Exception as exc:
             logger.warning("Failed to fetch open orders after cleanup for %s: %s", symbol, exc)
         try:
-            algo_orders = self.client.open_algo_orders(symbol)
+            algo_orders = self.exchange_client.get_algo_orders(symbol)
         except Exception as exc:
             logger.warning("Failed to fetch algo orders after cleanup for %s: %s", symbol, exc)
         logger.info(

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    exchange: str = Field(default="binance", alias="EXCHANGE")
+
     binance_api_key: str = Field(default="", alias="BINANCE_API_KEY")
     binance_api_secret: str = Field(default="", alias="BINANCE_API_SECRET")
     binance_base_url: str = Field(default="https://demo-fapi.binance.com", alias="BINANCE_BASE_URL")
@@ -305,6 +307,8 @@ class Settings(BaseSettings):
             raise RuntimeError("LIVE_MAX_POSITION_NOTIONAL_USDT must be >= 0")
         if not self.live_allowed_symbol_set:
             raise RuntimeError("LIVE_ALLOWED_SYMBOLS must not be empty")
+        if self.exchange.strip().lower() not in {"binance"}:
+            raise RuntimeError("EXCHANGE must be binance (OKX is not supported in v6.5.0)")
 
 
 @lru_cache(maxsize=1)
