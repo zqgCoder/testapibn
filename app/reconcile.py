@@ -10,12 +10,17 @@ from typing import Any
 
 from .binance_client import BinanceClient
 from .config import Settings
+from .live_guard import live_guard_applies
 from .runtime_control import RuntimeControl
 from .tv_sandbox import binance_env_label
 
 logger = logging.getLogger(__name__)
 
 _LEVEL_RANK = {"OK": 0, "WARN": 1, "ERROR": 2, "INFO": -1}
+
+RECONCILE_CONTEXT_DEFAULT = "default"
+RECONCILE_CONTEXT_LIVE_CANARY_PREFLIGHT = "live_canary_preflight"
+LIVE_CANARY_IGNORED_ERROR_CHECKS = frozenset({"binance_demo_environment"})
 
 
 @dataclass
@@ -63,6 +68,62 @@ def _aggregate_level(levels: list[str]) -> str:
             max_rank = rank
             result = level
     return result
+
+
+def iter_reconcile_checks(report: dict[str, Any]):
+    for check in report.get("checks") or []:
+        if isinstance(check, dict):
+            yield check
+    for symbol_report in report.get("symbols") or []:
+        if not isinstance(symbol_report, dict):
+            continue
+        for check in symbol_report.get("checks") or []:
+            if isinstance(check, dict):
+                yield check
+
+
+def should_ignore_reconcile_check_for_live_canary(
+    settings: Settings,
+    *,
+    check_name: str,
+    context: str,
+) -> bool:
+    if context != RECONCILE_CONTEXT_LIVE_CANARY_PREFLIGHT:
+        return False
+    if check_name not in LIVE_CANARY_IGNORED_ERROR_CHECKS:
+        return False
+    return bool(settings.live_canary_mode) and live_guard_applies(settings)
+
+
+def compute_reconcile_summary_for_context(
+    report: dict[str, Any],
+    settings: Settings,
+    *,
+    context: str = RECONCILE_CONTEXT_DEFAULT,
+) -> dict[str, Any]:
+    base = dict(report.get("summary") or {})
+    error_count = 0
+    warn_count = 0
+    for check in iter_reconcile_checks(report):
+        name = str(check.get("name") or "")
+        level = str(check.get("level") or "OK")
+        if should_ignore_reconcile_check_for_live_canary(
+            settings,
+            check_name=name,
+            context=context,
+        ):
+            continue
+        if level == "ERROR":
+            error_count += 1
+        elif level == "WARN":
+            warn_count += 1
+    return {
+        "open_position_count": int(base.get("open_position_count") or 0),
+        "unprotected_position_count": int(base.get("unprotected_position_count") or 0),
+        "residual_order_symbol_count": int(base.get("residual_order_symbol_count") or 0),
+        "error_count": error_count,
+        "warn_count": warn_count,
+    }
 
 
 def _safe_decimal(value: Any, default: str = "0") -> Decimal:

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from .live_guard import build_live_guard_status, live_guard_applies
+from .reconcile import RECONCILE_CONTEXT_LIVE_CANARY_PREFLIGHT, compute_reconcile_summary_for_context
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -45,9 +46,20 @@ def _empty_reconcile_summary() -> dict[str, Any]:
     }
 
 
-def _reconcile_summary_from_report(report: dict[str, Any] | None) -> dict[str, Any]:
+def _reconcile_summary_from_report(
+    report: dict[str, Any] | None,
+    settings: Settings | None = None,
+    *,
+    for_live_canary: bool = False,
+) -> dict[str, Any]:
     if not report:
         return _empty_reconcile_summary()
+    if for_live_canary and settings is not None:
+        return compute_reconcile_summary_for_context(
+            report,
+            settings,
+            context=RECONCILE_CONTEXT_LIVE_CANARY_PREFLIGHT,
+        )
     summary = dict((report.get("summary") or {}))
     return {
         "open_position_count": summary.get("open_position_count", 0),
@@ -94,6 +106,7 @@ def evaluate_canary_blocking_reasons(
     *,
     market: CanaryMarketSnapshot | None = None,
     reconcile_summary: dict[str, Any] | None = None,
+    fetch_error: str | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     guard = build_live_guard_status(settings, runtime_control)
@@ -131,6 +144,8 @@ def evaluate_canary_blocking_reasons(
         reasons.append("one_shot_active")
 
     snapshot = market or CanaryMarketSnapshot()
+    if fetch_error:
+        reasons.append("btcusdt_fetch_error")
     if symbol_has_open_position(snapshot.positions):
         reasons.append("btcusdt_position_not_flat")
     if snapshot.algo_orders:
@@ -139,6 +154,12 @@ def evaluate_canary_blocking_reasons(
         reasons.append("btcusdt_open_orders_exist")
 
     summary = reconcile_summary or _empty_reconcile_summary()
+    if int(summary.get("open_position_count") or 0) > 0:
+        reasons.append("reconcile_open_positions")
+    if int(summary.get("unprotected_position_count") or 0) > 0:
+        reasons.append("reconcile_unprotected_positions")
+    if int(summary.get("residual_order_symbol_count") or 0) > 0:
+        reasons.append("reconcile_residual_orders")
     error_count = int(summary.get("error_count") or 0)
     if error_count > 0:
         reasons.append("reconcile_error")
@@ -152,23 +173,29 @@ def build_live_canary_preflight(
     *,
     market: CanaryMarketSnapshot | None = None,
     reconcile_report: dict[str, Any] | None = None,
+    fetch_error: str | None = None,
 ) -> dict[str, Any]:
     guard = build_live_guard_status(settings, runtime_control)
     runtime = _runtime_section(runtime_control)
     snapshot = market or CanaryMarketSnapshot()
-    reconcile_summary = _reconcile_summary_from_report(reconcile_report)
+    reconcile_summary = _reconcile_summary_from_report(
+        reconcile_report,
+        settings,
+        for_live_canary=True,
+    )
     blocking_reasons = evaluate_canary_blocking_reasons(
         settings,
         runtime_control,
         market=snapshot,
         reconcile_summary=reconcile_summary,
+        fetch_error=fetch_error,
     )
 
     position_amt = Decimal("0")
     for row in snapshot.positions:
         position_amt += _position_amount(row)
 
-    return {
+    payload: dict[str, Any] = {
         "binance_env": guard["binance_env"],
         "binance_base_url": guard["binance_base_url"],
         "is_live": guard["is_live"],
@@ -202,6 +229,9 @@ def build_live_canary_preflight(
         "phase": "preflight_only",
         "note": "v6.4.5 仅 preflight 展示，本阶段不执行真实实盘交易",
     }
+    if fetch_error:
+        payload["btcusdt"]["fetch_error"] = fetch_error
+    return payload
 
 
 def fetch_canary_market_snapshot(client: Any, symbol: str = DEFAULT_CANARY_SYMBOL) -> CanaryMarketSnapshot:

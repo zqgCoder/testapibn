@@ -355,9 +355,8 @@ def register_runtime_control_dashboard_routes(
             runtime_control,
             market=market,
             reconcile_report=report,
+            fetch_error=market_error,
         )
-        if market_error:
-            payload["btcusdt"]["fetch_error"] = market_error
         return JSONResponse(content={"成功": True, "Preflight": payload})
 
     @router.get("/api/okx-canary/preflight")

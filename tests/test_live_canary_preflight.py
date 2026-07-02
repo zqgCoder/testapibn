@@ -122,11 +122,51 @@ class LiveCanaryPreflightTests(unittest.TestCase):
     def test_reconcile_error(self) -> None:
         settings = _settings()
         rc = _runtime(locked=True)
-        report = {"summary": {"error_count": 2, "warn_count": 1}}
+        report = {
+            "summary": {
+                "error_count": 2,
+                "warn_count": 1,
+                "open_position_count": 0,
+                "unprotected_position_count": 0,
+                "residual_order_symbol_count": 0,
+            },
+            "checks": [
+                {"name": "runtime_locked", "level": "ERROR", "message": "not locked"},
+            ],
+            "symbols": [],
+        }
         result = build_live_canary_preflight(
             settings, rc, market=_empty_market(), reconcile_report=report
         )
         self.assertIn("reconcile_error", result["blocking_reasons"])
+
+    def test_live_demo_environment_error_not_blocking_when_canary_ready(self) -> None:
+        settings = _settings(LIVE_CANARY_MODE="true")
+        rc = _runtime(locked=True)
+        report = {
+            "summary": {
+                "error_count": 1,
+                "warn_count": 0,
+                "open_position_count": 0,
+                "unprotected_position_count": 0,
+                "residual_order_symbol_count": 0,
+            },
+            "checks": [
+                {
+                    "name": "binance_demo_environment",
+                    "level": "ERROR",
+                    "message": "Binance 环境不是 demo/testnet (binance_env=live)",
+                },
+                {"name": "runtime_locked", "level": "OK", "message": "locked"},
+            ],
+            "symbols": [],
+        }
+        result = build_live_canary_preflight(
+            settings, rc, market=_empty_market(), reconcile_report=report
+        )
+        self.assertEqual(result["reconcile_summary"]["error_count"], 0)
+        self.assertNotIn("reconcile_error", result["blocking_reasons"])
+        self.assertTrue(result["canary_ready"])
 
     def test_all_conditions_met_canary_ready(self) -> None:
         result = _ready_preflight()
